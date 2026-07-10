@@ -39,7 +39,9 @@ src/
 │   ├── inventory/            # stock levels per product+warehouse (quantity/reserved)
 │   ├── suppliers/            # tenant-scoped supplier directory (soft delete)
 │   ├── purchases/            # draft → completed/cancelled receipts; completion increases stock
-│   └── write-offs/           # immutable audit record; creation atomically decreases stock
+│   ├── write-offs/           # draft → confirmed/cancelled; confirmation decreases stock
+│   ├── stock-movements/      # read-only audit ledger, written by the modules below
+│   └── inventarizations/     # draft → completed/cancelled stock count; completion reconciles to fact
 ├── middlewares/            # authenticate, requireRole, enforceTenant, validate,
 │                            # isValidId, errorHandler, notFoundHandler,
 │                            # rateLimiter, securityHeaders
@@ -54,12 +56,15 @@ tests/
 ├── inventory.test.ts         # stock create/adjust + FK tenant checks + RBAC
 ├── suppliers.test.ts          # supplier CRUD + unique name + search + RBAC
 ├── purchases.test.ts           # draft/complete/cancel workflow + stock increase + RBAC + transaction rollback
-└── write-offs.test.ts           # draft/confirm/cancel workflow + role split + transaction rollback
+├── write-offs.test.ts           # draft/confirm/cancel workflow + role split + transaction rollback
+├── stock-movements.test.ts       # movement generation from all sources + tenant isolation + rollback
+└── inventarizations.test.ts       # auto-populate/count/complete workflow + reconciliation + rollback
 ```
 
-Each future domain module (`stock-movements`) should follow the same shape
-as `write-offs/`: `*.model.ts`, `*.repository.ts`, `*.service.ts`,
-`*.controller.ts`, `*.routes.ts`, `*.schema.ts`, `*.types.ts`.
+Each future domain module (`notifications`) should follow the same shape as
+`inventarizations/`: `*.model.ts`, `*.repository.ts`,
+`*.service.ts`, `*.controller.ts`, `*.routes.ts`, `*.schema.ts`,
+`*.types.ts`.
 
 ## Multi-tenancy — how isolation is enforced
 
@@ -121,6 +126,14 @@ through the invite endpoint.
 | GET | `/write-offs/:id` | access token | Get one write-off (tenant-scoped) |
 | POST | `/write-offs/:id/confirm` | access token, `owner`/`admin`/`manager` | `draft` → `confirmed`; **atomically decreases** `Inventory.quantity` in one transaction; rejects (409) if stock is no longer sufficient |
 | POST | `/write-offs/:id/cancel` | access token, `owner`/`admin`/`manager` | `draft` → `cancelled`; no stock effect |
+| GET | `/stock-movements` | access token | Paginated list, `?page&perPage&productId&warehouseId&type`. **Read-only** - no POST; see below |
+| GET | `/stock-movements/:id` | access token | Get one movement (tenant-scoped) |
+| GET | `/inventarizations` | access token | Paginated list, `?page&perPage&warehouseId&status` |
+| POST | `/inventarizations` | access token (**any role, including `employee`**) | Creates a **draft** count for a warehouse; auto-includes every product in stock there unless `productIds` is given |
+| GET | `/inventarizations/:id` | access token | Get one (tenant-scoped), including all items' system/counted/discrepancy |
+| PATCH | `/inventarizations/:id/count` | access token (**any role, including `employee`**) | Records counted quantities for one or more items (draft only) |
+| POST | `/inventarizations/:id/complete` | access token, `owner`/`admin`/`manager` | Requires every item counted; **atomically** reconciles `Inventory.quantity` to the counted value per item and logs a movement for each non-zero discrepancy |
+| POST | `/inventarizations/:id/cancel` | access token, `owner`/`admin`/`manager` | `draft` → `cancelled`; no stock effect |
 
 Response envelope follows `Claude.md`:
 ```json
@@ -205,12 +218,62 @@ Response envelope follows `Claude.md`:
     product. A draft requires an existing `Inventory` record for that
     product+warehouse (404 if none exists) — you can't propose writing off
     stock that was never received.
+14. **Stock Movements is a read-only, system-generated ledger** — there is
+    intentionally no `POST /stock-movements`. A movement is written
+    automatically, inside the same transaction as the triggering change,
+    from exactly four places:
+    - `purchase.service.ts#completePurchase` → one movement per line item,
+      `type: "purchase"`, positive `quantityDelta`, `referenceId` = the
+      Purchase's id.
+    - `write-off.service.ts#confirmWriteOff` → one movement, `type:
+      "write_off"`, negative `quantityDelta`, `referenceId` = the
+      Write-off's id.
+    - `inventory.service.ts#adjustInventory` (the service behind `PATCH
+      /inventory/:id/adjust`) → one movement, `type: "manual_adjustment"`,
+      `referenceId: null`, but **only when `quantityDelta !== 0`** — a
+      reservation-only change (`reservedDelta` alone) doesn't move any
+      physical stock, so it doesn't get logged here.
+    - `inventarization.service.ts#completeInventarization` → one movement
+      per item with a non-zero discrepancy, `type: "inventarization"`,
+      `referenceId` = the Inventarization's id. Items where the count
+      matched the system exactly produce no movement (nothing moved).
+
+    Each movement also stores `quantityAfter` (a snapshot of the resulting
+    `Inventory.quantity`), so the history is readable on its own without
+    replaying every prior delta. Because the movement write shares a
+    transaction with its triggering stock change, they can never drift apart
+    - either both happened or neither did (`tests/stock-movements.test.ts`
+    includes a rollback test for the manual-adjustment path, and
+    `purchases.test.ts`, `write-offs.test.ts`, and `inventarizations.test.ts`
+    each assert no orphaned movement is left behind on rollback too).
+15. **Inventarization reconciles to the physical count, not a fixed delta.**
+    `POST /inventarizations` snapshots each item's current
+    `Inventory.quantity` as `systemQuantity` (either for the `productIds`
+    given, or - if omitted - every product currently in stock at that
+    warehouse). `PATCH /inventarizations/:id/count` can be called
+    incrementally (e.g. as staff walk the warehouse) and computes
+    `discrepancy = countedQuantity - systemQuantity` per item.
+    `POST /inventarizations/:id/complete` requires every item to have a
+    recorded count (422 otherwise), then - atomically - applies each
+    non-zero discrepancy as a delta via the same invariant-checked
+    `adjustStock` used elsewhere (so it still can't push quantity negative,
+    e.g. if stock moved for unrelated reasons between counting and
+    confirming). Like Write-offs, creating a draft and recording counts is
+    open to **any authenticated role including `employee`**, since they're
+    usually the one physically counting; confirming or cancelling is
+    `owner`/`admin`/`manager` only. There's no `PATCH` to edit warehouse/
+    productIds after creation and no way to add items to an existing draft
+    - start a new one if the scope was wrong. The structured result of
+    `GET /inventarizations/:id` (items with system/counted/discrepancy) is
+    the "report" from `PROJECT_DESCRIPTION.md`; a rendered PDF version is
+    deferred to the planned PDF-export feature.
 
 ## Not yet implemented (next stages, waiting for your go-ahead)
 
-- Stock Movements, Inventarization, Notifications modules.
+- Notifications module.
 - Refresh-token/session table for multi-device logout.
 - Email delivery for invites.
+- PDF export, receipt photo uploads, AI assistant (planned after Notifications).
 
 ## Running MongoDB locally (replica set required for transactions)
 

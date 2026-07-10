@@ -441,5 +441,12 @@ describe('Transactional completion (rollback on partial failure)', () => {
       .get(`/api/v1/inventory?warehouseId=${warehouseId}`)
       .set('Authorization', `Bearer ${token}`);
     expect(inventoryList.body.data.items).toHaveLength(0);
+
+    // Nor should a StockMovement have stuck for the first item's increment.
+    const movements = await request(app)
+      .get('/api/v1/stock-movements')
+      .set('Authorization', `Bearer ${token}`);
+    expect(movements.status, JSON.stringify(movements.body)).toBe(200);
+    expect(movements.body.data.items).toHaveLength(0);
   });
 });

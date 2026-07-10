@@ -420,5 +420,13 @@ describe('Transactional confirmation (rollback on failure)', () => {
       .get(`/api/v1/write-offs/${draft.body.data.id}`)
       .set('Authorization', `Bearer ${ownerToken}`);
     expect(stillDraft.body.data.status).toBe('draft');
+
+    // The StockMovement written just before the simulated failure must have
+    // been rolled back too - it was part of the same transaction.
+    const movements = await request(app)
+      .get('/api/v1/stock-movements')
+      .set('Authorization', `Bearer ${ownerToken}`);
+    expect(movements.status, JSON.stringify(movements.body)).toBe(200);
+    expect(movements.body.data.items).toHaveLength(0);
   });
 });

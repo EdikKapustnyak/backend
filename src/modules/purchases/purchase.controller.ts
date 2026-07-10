@@ -131,7 +131,11 @@ export const updatePurchase = ctrlWrapper(async (req: Request, res: Response) =>
 export const completePurchase = ctrlWrapper(async (req: Request, res: Response) => {
   if (!req.auth) throw new UnauthorizedError();
 
-  const result = await completePurchaseService(req.params['id'] as string, req.auth.companyId);
+  const result = await completePurchaseService(
+    req.params['id'] as string,
+    req.auth.companyId,
+    req.auth.userId,
+  );
   sendSuccess(res, result, 'Purchase completed and stock updated');
 });
 

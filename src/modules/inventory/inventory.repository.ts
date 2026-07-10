@@ -40,6 +40,18 @@ export const inventoryRepository = {
     return InventoryModel.findOne({ companyId, productId, warehouseId }).exec();
   },
 
+  /**
+   * Returns every stock record for a warehouse, unpaginated. Used internally
+   * (e.g. to auto-populate an Inventarization draft) - never exposed directly
+   * via an unbounded HTTP endpoint.
+   */
+  async findAllByWarehouseInCompany(
+    companyId: string,
+    warehouseId: string,
+  ): Promise<InventoryDocument[]> {
+    return InventoryModel.find({ companyId, warehouseId }).exec();
+  },
+
   async findManyInCompany(
     filter: ListInventoryFilter,
     pagination: PaginationParams,

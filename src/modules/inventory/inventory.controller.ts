@@ -3,10 +3,10 @@ import { ctrlWrapper } from '../../utils/ctrlWrapper.js';
 import { sendSuccess } from '../../utils/apiResponse.js';
 import { parsePaginationParams, calculatePaginationData } from '../../utils/pagination.js';
 import { inventoryRepository } from './inventory.repository.js';
-import { toPublicInventory } from './inventory.service.js';
+import { toPublicInventory, adjustInventory as adjustInventoryService } from './inventory.service.js';
 import { productRepository } from '../products/product.repository.js';
 import { warehouseRepository } from '../warehouses/warehouse.repository.js';
-import { UnauthorizedError, NotFoundError, ConflictError } from '../../errors/index.js';
+import { UnauthorizedError, NotFoundError } from '../../errors/index.js';
 
 export const createInventory = ctrlWrapper(async (req: Request, res: Response) => {
   if (!req.auth) throw new UnauthorizedError();
@@ -68,9 +68,10 @@ export const getInventory = ctrlWrapper(async (req: Request, res: Response) => {
 });
 
 /**
- * Applies a manual stock correction. This is also the primitive that future
- * Purchases (positive quantityDelta), Write-offs (negative quantityDelta),
- * and Inventarization modules will build on top of.
+ * Applies a manual stock correction. This is also the primitive that
+ * Purchases (positive quantityDelta) and Write-offs (negative quantityDelta)
+ * build on, and it now also records a StockMovement audit entry - see
+ * inventory.service.ts#adjustInventory.
  */
 export const adjustInventory = ctrlWrapper(async (req: Request, res: Response) => {
   if (!req.auth) throw new UnauthorizedError();
@@ -79,20 +80,13 @@ export const adjustInventory = ctrlWrapper(async (req: Request, res: Response) =
   const quantityDelta = (req.body.quantityDelta as number | undefined) ?? 0;
   const reservedDelta = (req.body.reservedDelta as number | undefined) ?? 0;
 
-  const existing = await inventoryRepository.findByIdInCompany(id, req.auth.companyId);
-  if (!existing) throw new NotFoundError('Inventory record not found');
-
-  const updated = await inventoryRepository.adjustStock(
+  const result = await adjustInventoryService(
     id,
     req.auth.companyId,
     quantityDelta,
     reservedDelta,
+    req.auth.userId,
   );
-  if (!updated) {
-    throw new ConflictError(
-      'Adjustment rejected: it would result in negative stock or reserved exceeding quantity',
-    );
-  }
 
-  sendSuccess(res, toPublicInventory(updated), 'Inventory adjusted');
+  sendSuccess(res, result, 'Inventory adjusted');
 });

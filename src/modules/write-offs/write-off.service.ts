@@ -3,6 +3,8 @@ import type { WriteOffDocument } from './write-off.model.js';
 import { WriteOffStatus, type PublicWriteOff } from './write-off.types.js';
 import { writeOffRepository } from './write-off.repository.js';
 import { inventoryRepository } from '../inventory/inventory.repository.js';
+import { stockMovementRepository } from '../stock-movements/stock-movement.repository.js';
+import { StockMovementType, StockMovementReferenceType } from '../stock-movements/stock-movement.types.js';
 import { NotFoundError, ConflictError } from '../../errors/index.js';
 
 export function toPublicWriteOff(writeOff: WriteOffDocument): PublicWriteOff {
@@ -68,6 +70,21 @@ export async function confirmWriteOff(
       if (!adjusted) {
         throw new ConflictError('Insufficient stock to confirm this write-off');
       }
+
+      await stockMovementRepository.create(
+        {
+          companyId,
+          productId: existing.productId.toString(),
+          warehouseId: existing.warehouseId.toString(),
+          type: StockMovementType.WRITE_OFF,
+          quantityDelta: -existing.quantity,
+          quantityAfter: adjusted.quantity,
+          referenceType: StockMovementReferenceType.WRITE_OFF,
+          referenceId: existing._id.toString(),
+          createdBy: confirmedBy,
+        },
+        session,
+      );
 
       confirmed = await writeOffRepository.confirmInCompany(id, companyId, confirmedBy, session);
       if (!confirmed) {

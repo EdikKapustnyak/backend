@@ -7,6 +7,8 @@ import { inventoryRouter } from '../modules/inventory/inventory.routes.js';
 import { supplierRouter } from '../modules/suppliers/supplier.routes.js';
 import { purchaseRouter } from '../modules/purchases/purchase.routes.js';
 import { writeOffRouter } from '../modules/write-offs/write-off.routes.js';
+import { stockMovementRouter } from '../modules/stock-movements/stock-movement.routes.js';
+import { inventarizationRouter } from '../modules/inventarizations/inventarization.routes.js';
 
 export const apiRouter = Router();
 
@@ -18,3 +20,5 @@ apiRouter.use('/inventory', inventoryRouter);
 apiRouter.use('/suppliers', supplierRouter);
 apiRouter.use('/purchases', purchaseRouter);
 apiRouter.use('/write-offs', writeOffRouter);
+apiRouter.use('/stock-movements', stockMovementRouter);
+apiRouter.use('/inventarizations', inventarizationRouter);
