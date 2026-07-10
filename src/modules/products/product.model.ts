@@ -80,9 +80,13 @@ const productSchema = new Schema<ProductDocumentShape>(
 // A company cannot have two products with the same SKU.
 productSchema.index({ companyId: 1, sku: 1 }, { unique: true });
 // Barcode is optional but must be unique within a company when present.
+// A partial index (not sparse) is required here: sparse indexes only skip
+// documents where the field is *missing*, but our schema sets barcode to
+// an explicit `null` default when not provided - sparse would still index
+// that null, causing every barcode-less product in a company to collide.
 productSchema.index(
   { companyId: 1, barcode: 1 },
-  { unique: true, sparse: true },
+  { unique: true, partialFilterExpression: { barcode: { $type: 'string' } } },
 );
 productSchema.index({ companyId: 1, isActive: 1 });
 productSchema.index({ companyId: 1, category: 1 });

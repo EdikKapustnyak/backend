@@ -134,6 +134,22 @@ describe('POST /api/v1/products', () => {
     expect(resB.status).toBe(201);
   });
 
+  it('allows two products with no barcode in the same company (regression: partial index, not sparse)', async () => {
+    const { token } = await registerCompany('owner3c@prod.test', 'Product Co 3c');
+
+    const first = await request(app)
+      .post('/api/v1/products')
+      .set('Authorization', `Bearer ${token}`)
+      .send({ name: 'No Barcode One', sku: 'NO-BARCODE-1', purchasePrice: 1, salePrice: 2 });
+    const second = await request(app)
+      .post('/api/v1/products')
+      .set('Authorization', `Bearer ${token}`)
+      .send({ name: 'No Barcode Two', sku: 'NO-BARCODE-2', purchasePrice: 1, salePrice: 2 });
+
+    expect(first.status, JSON.stringify(first.body)).toBe(201);
+    expect(second.status, JSON.stringify(second.body)).toBe(201);
+  });
+
   it('rejects a negative price', async () => {
     const { token } = await registerCompany('owner4@prod.test', 'Product Co 4');
 

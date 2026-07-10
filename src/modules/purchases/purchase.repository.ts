@@ -1,4 +1,4 @@
-import type { FilterQuery } from 'mongoose';
+import type { ClientSession, FilterQuery } from 'mongoose';
 import { PurchaseModel, type PurchaseDocument } from './purchase.model.js';
 import { PurchaseStatus, type PurchaseDocumentShape, type PurchaseItemShape } from './purchase.types.js';
 import type { PaginationParams } from '../../utils/pagination.js';
@@ -98,11 +98,15 @@ export const purchaseRepository = {
   },
 
   /** Atomic draft -> completed transition; returns null if not currently a draft. */
-  async completeInCompany(id: string, companyId: string): Promise<PurchaseDocument | null> {
+  async completeInCompany(
+    id: string,
+    companyId: string,
+    session?: ClientSession,
+  ): Promise<PurchaseDocument | null> {
     return PurchaseModel.findOneAndUpdate(
       { _id: id, companyId, status: PurchaseStatus.DRAFT },
       { $set: { status: PurchaseStatus.COMPLETED, completedAt: new Date() } },
-      { new: true },
+      { new: true, session },
     ).exec();
   },
 

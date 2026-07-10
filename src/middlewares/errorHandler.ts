@@ -82,7 +82,10 @@ export function errorHandler(
 
   // 5. Duplicate unique-index key (e.g. email or slug already taken).
   if (isDuplicateKeyError(err)) {
-    const field = err.keyValue ? Object.keys(err.keyValue)[0] : 'field';
+    const keys = err.keyValue ? Object.keys(err.keyValue) : [];
+    // Our compound tenant-scoped indexes are always { companyId, <field> } -
+    // companyId is never the meaningful part of the message to the user.
+    const field = keys.find((key) => key !== 'companyId') ?? keys[0] ?? 'field';
     res.status(409).json({
       success: false,
       error: {

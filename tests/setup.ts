@@ -9,13 +9,16 @@ process.env.JWT_REFRESH_EXPIRES_IN = '7d';
 
 import { beforeAll, afterAll, afterEach } from 'vitest';
 import mongoose from 'mongoose';
-import { MongoMemoryServer } from 'mongodb-memory-server';
+import { MongoMemoryReplSet } from 'mongodb-memory-server';
 
-let mongoServer: MongoMemoryServer;
+// A single-node replica set is required for MongoDB multi-document
+// transactions (used by Purchases completion) - plain standalone MongoDB
+// does not support them, even locally.
+let replSet: MongoMemoryReplSet;
 
 beforeAll(async () => {
-  mongoServer = await MongoMemoryServer.create();
-  await mongoose.connect(mongoServer.getUri());
+  replSet = await MongoMemoryReplSet.create({ replSet: { count: 1 } });
+  await mongoose.connect(replSet.getUri());
 });
 
 afterEach(async () => {
@@ -27,5 +30,5 @@ afterEach(async () => {
 
 afterAll(async () => {
   await mongoose.disconnect();
-  await mongoServer.stop();
+  await replSet.stop();
 });

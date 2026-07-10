@@ -38,7 +38,8 @@ src/
 │   ├── products/             # tenant-scoped product catalog (soft delete)
 │   ├── inventory/            # stock levels per product+warehouse (quantity/reserved)
 │   ├── suppliers/            # tenant-scoped supplier directory (soft delete)
-│   └── purchases/            # draft → completed/cancelled receipts; completion increases stock
+│   ├── purchases/            # draft → completed/cancelled receipts; completion increases stock
+│   └── write-offs/           # immutable audit record; creation atomically decreases stock
 ├── middlewares/            # authenticate, requireRole, enforceTenant, validate,
 │                            # isValidId, errorHandler, notFoundHandler,
 │                            # rateLimiter, securityHeaders
@@ -46,17 +47,18 @@ src/
 ├── utils/                  # jwt, password hashing, pagination, objectId (Zod), etc.
 └── types/                  # Express Request augmentation (req.auth)
 tests/
-├── setup.ts               # in-memory MongoDB lifecycle for tests
+├── setup.ts               # in-memory MongoDB replica-set lifecycle for tests
 ├── auth.test.ts            # auth flow + multi-tenant isolation + RBAC tests
 ├── warehouses.test.ts       # warehouse CRUD + tenant isolation + RBAC + pagination
 ├── products.test.ts         # product CRUD + unique SKU/barcode + search + RBAC
 ├── inventory.test.ts         # stock create/adjust + FK tenant checks + RBAC
 ├── suppliers.test.ts          # supplier CRUD + unique name + search + RBAC
-└── purchases.test.ts           # draft/complete/cancel workflow + stock increase + RBAC
+├── purchases.test.ts           # draft/complete/cancel workflow + stock increase + RBAC + transaction rollback
+└── write-offs.test.ts           # draft/confirm/cancel workflow + role split + transaction rollback
 ```
 
-Each future domain module (`write-offs`, `stock-movements`) should follow the
-same shape as `purchases/`: `*.model.ts`, `*.repository.ts`, `*.service.ts`,
+Each future domain module (`stock-movements`) should follow the same shape
+as `write-offs/`: `*.model.ts`, `*.repository.ts`, `*.service.ts`,
 `*.controller.ts`, `*.routes.ts`, `*.schema.ts`, `*.types.ts`.
 
 ## Multi-tenancy — how isolation is enforced
@@ -114,6 +116,11 @@ through the invite endpoint.
 | PATCH | `/purchases/:id` | access token, `owner`/`admin`/`manager` | Edit supplier/warehouse/items/notes — **only while status is `draft`** (409 otherwise) |
 | POST | `/purchases/:id/complete` | access token, `owner`/`admin`/`manager` | `draft` → `completed`; increases `Inventory.quantity` for every line item (creates the stock record if it doesn't exist yet) |
 | POST | `/purchases/:id/cancel` | access token, `owner`/`admin`/`manager` | `draft` → `cancelled`; no stock effect |
+| GET | `/write-offs` | access token | Paginated list, `?page&perPage&productId&warehouseId&reason&status` |
+| POST | `/write-offs` | access token (**any role, including `employee`**) | Creates a **draft** write-off (no stock change yet) |
+| GET | `/write-offs/:id` | access token | Get one write-off (tenant-scoped) |
+| POST | `/write-offs/:id/confirm` | access token, `owner`/`admin`/`manager` | `draft` → `confirmed`; **atomically decreases** `Inventory.quantity` in one transaction; rejects (409) if stock is no longer sufficient |
+| POST | `/write-offs/:id/cancel` | access token, `owner`/`admin`/`manager` | `draft` → `cancelled`; no stock effect |
 
 Response envelope follows `Claude.md`:
 ```json
@@ -158,10 +165,10 @@ Response envelope follows `Claude.md`:
 8. **Low-stock detection is not implemented yet** — `Product.minStockLevel`
    is stored but nothing currently compares it against `Inventory.quantity`;
    that comparison belongs to the future Notifications module.
-9. **Supplier `name` is unique per company** (same soft-delete pattern as
-   Warehouses/Products) — two suppliers with an identical name in the same
-   company are rejected (409); the same name is fine across companies.
-10. **Purchases follow a draft → completed/cancelled workflow**, not a
+10. **Supplier `name` is unique per company** (same soft-delete pattern as
+    Warehouses/Products) — two suppliers with an identical name in the same
+    company are rejected (409); the same name is fine across companies.
+11. **Purchases follow a draft → completed/cancelled workflow**, not a
     single-step create. Only `draft` purchases can be edited or cancelled;
     completing is a one-way transition that increases stock via
     `Inventory` (creating the stock record if none existed for that
@@ -171,26 +178,67 @@ Response envelope follows `Claude.md`:
     purchase can currently only be reversed by a manual inverse stock
     adjustment (a "return to supplier" flow would be a good candidate for
     a future module).
-11. **⚠️ Purchase completion is NOT wrapped in a MongoDB transaction.** The
-    status flip to `completed` and each line item's stock increment are
-    separate operations. On a standalone (non-replica-set) MongoDB - the
-    default for local dev and for this test suite - multi-document
-    transactions aren't available. If the process crashes mid-way through
-    a multi-item purchase's completion, the purchase could end up marked
-    `completed` with only some items' stock applied. To close this gap:
-    run MongoDB as a single-node replica set and wrap
-    `purchase.service.ts#completePurchase` in a `session.withTransaction`
-    block. Flag if you want this added now — it's a real gap worth taking
-    seriously before this goes near production, just scoped out of this
-    stage to avoid changing the shared test DB setup without your sign-off.
+12. **Purchase completion is transactional.** The status flip to
+    `completed` and every line item's stock increment run inside a single
+    MongoDB session (`session.withTransaction` in
+    `purchase.service.ts#completePurchase`): either the whole thing commits,
+    or none of it does. If anything fails partway through, MongoDB rolls
+    back the status change *and* every stock increment already applied in
+    that attempt - a purchase can never end up `completed` with only some
+    of its items reflected in stock. `tests/purchases.test.ts` includes a
+    test that simulates a mid-transaction failure and asserts the full
+    rollback. This requires MongoDB to run as a **replica set** (a
+    single-node one is sufficient) - see "Running MongoDB locally" below.
+13. **Write-offs follow a draft → confirmed/cancelled workflow, split by
+    role**: any authenticated tenant member — **including `employee`** — can
+    create a draft (they're usually the one who actually finds the damaged
+    or expired stock). Only `owner`/`admin`/`manager` can confirm or cancel
+    it. Creating a draft does **not** touch `Inventory` yet; confirming does,
+    atomically, in one transaction (rejects with 409 if stock is no longer
+    sufficient - checked at confirm time, not draft time, since stock can
+    change while a draft is waiting for review). There's no `PATCH` and no
+    `DELETE` on a write-off itself — `cancel` is the draft-stage equivalent
+    of delete, and confirmed write-offs are immutable audit records; correct
+    a mistaken confirmation via `PATCH /inventory/:id/adjust`. Only one
+    product per write-off document (matches the schema shape in
+    `PROJECT_DESCRIPTION.md`) — for several products, create one draft per
+    product. A draft requires an existing `Inventory` record for that
+    product+warehouse (404 if none exists) — you can't propose writing off
+    stock that was never received.
 
 ## Not yet implemented (next stages, waiting for your go-ahead)
 
-- Write-offs, Stock Movements, Inventarization, Notifications modules.
+- Stock Movements, Inventarization, Notifications modules.
 - Refresh-token/session table for multi-device logout.
 - Email delivery for invites.
-- Transactional guarantee for multi-step stock operations (see point 11
-  above) — recommended before production use.
+
+## Running MongoDB locally (replica set required for transactions)
+
+Purchase completion uses a MongoDB transaction, which only works against a
+replica set - a plain standalone `mongod` will fail with an error like
+"Transaction numbers are only allowed on a replica set member". A **single
+-node** replica set is enough; you don't need multiple servers.
+
+**Docker (recommended for local dev):**
+```bash
+docker run -d --name inventory-mongo -p 27017:27017 mongo:7 --replSet rs0
+docker exec -it inventory-mongo mongosh --eval "rs.initiate()"
+```
+Then set `MONGODB_URI=mongodb://localhost:27017/inventory_management?replicaSet=rs0`.
+
+**Local `mongod` install:**
+```bash
+mongod --replSet rs0 --dbpath /path/to/your/data
+# in another terminal, once it's up:
+mongosh --eval "rs.initiate()"
+```
+
+**MongoDB Atlas:** already runs as a replica set by default - no changes
+needed, just use the connection string Atlas gives you.
+
+The test suite doesn't need any of this set up locally - it spins up its own
+temporary single-node replica set automatically via `mongodb-memory-server`
+(see `tests/setup.ts`).
 
 ## Notes on this delivery
 

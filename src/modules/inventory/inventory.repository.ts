@@ -1,4 +1,4 @@
-import type { FilterQuery } from 'mongoose';
+import type { ClientSession, FilterQuery } from 'mongoose';
 import { InventoryModel, type InventoryDocument } from './inventory.model.js';
 import type { PaginationParams } from '../../utils/pagination.js';
 import type { InventoryDocumentShape } from './inventory.types.js';
@@ -78,11 +78,12 @@ export const inventoryRepository = {
     productId: string,
     warehouseId: string,
     quantityDelta: number,
+    session?: ClientSession,
   ): Promise<InventoryDocument> {
     const updated = await InventoryModel.findOneAndUpdate(
       { companyId, productId, warehouseId },
       { $inc: { quantity: quantityDelta }, $setOnInsert: { reserved: 0 } },
-      { new: true, upsert: true },
+      { new: true, upsert: true, session },
     ).exec();
     // upsert:true + new:true guarantees a non-null document.
     return updated as InventoryDocument;
@@ -100,6 +101,7 @@ export const inventoryRepository = {
     companyId: string,
     quantityDelta: number,
     reservedDelta: number,
+    session?: ClientSession,
   ): Promise<InventoryDocument | null> {
     return InventoryModel.findOneAndUpdate(
       {
@@ -119,7 +121,7 @@ export const inventoryRepository = {
         },
       },
       { $inc: { quantity: quantityDelta, reserved: reservedDelta } },
-      { new: true },
+      { new: true, session },
     ).exec();
   },
 };

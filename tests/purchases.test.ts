@@ -1,6 +1,7 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import request from 'supertest';
 import { createApp } from '../src/app.js';
+import { inventoryRepository } from '../src/modules/inventory/inventory.repository.js';
 
 const app = createApp();
 const strongPassword = 'Sup3rSecret!';
@@ -373,5 +374,72 @@ describe('Multi-tenant isolation for purchases', () => {
       .set('Authorization', `Bearer ${companyB.token}`);
 
     expect(res.status).toBe(404);
+  });
+});
+
+describe('Transactional completion (rollback on partial failure)', () => {
+  it('rolls back the status flip AND every stock increment if one item fails mid-way', async () => {
+    const { token, supplierId, warehouseId, productId } = await baseScenario(
+      'owner14@pur.test',
+      'Purchase Co 14',
+    );
+    const secondProduct = await request(app)
+      .post('/api/v1/products')
+      .set('Authorization', `Bearer ${token}`)
+      .send({ name: 'Second Product', sku: 'SKU-SECOND-14', purchasePrice: 5, salePrice: 10 });
+    expect(secondProduct.status, JSON.stringify(secondProduct.body)).toBe(201);
+    const productId2 = secondProduct.body.data.id as string;
+
+    const created = await request(app)
+      .post('/api/v1/purchases')
+      .set('Authorization', `Bearer ${token}`)
+      .send({
+        supplierId,
+        warehouseId,
+        items: [
+          { productId, quantity: 10, unitPrice: 5 },
+          { productId: productId2, quantity: 20, unitPrice: 5 },
+        ],
+      });
+
+    // Let the FIRST item's stock increment go through for real, then force
+    // the SECOND one to blow up - simulating a crash/error mid-transaction.
+    const original = inventoryRepository.incrementOrCreate.bind(inventoryRepository);
+    let callCount = 0;
+    const spy = vi
+      .spyOn(inventoryRepository, 'incrementOrCreate')
+      .mockImplementation(async (...args) => {
+        callCount += 1;
+        if (callCount === 2) {
+          throw new Error('Simulated failure applying the second item');
+        }
+        return original(...args);
+      });
+
+    try {
+      const completeRes = await request(app)
+        .post(`/api/v1/purchases/${created.body.data.id}/complete`)
+        .set('Authorization', `Bearer ${token}`);
+
+      // The unexpected error surfaces as a generic 500, not a clean 4xx -
+      // it's not a business-rule rejection, it's a simulated crash.
+      expect(completeRes.status).toBe(500);
+    } finally {
+      spy.mockRestore();
+    }
+
+    // The purchase must still be a draft - the status flip was rolled back.
+    const purchaseAfter = await request(app)
+      .get(`/api/v1/purchases/${created.body.data.id}`)
+      .set('Authorization', `Bearer ${token}`);
+    expect(purchaseAfter.body.data.status).toBe('draft');
+
+    // Neither product's stock increment should have stuck - including the
+    // FIRST item, which "succeeded" before the second one threw. Without a
+    // real transaction this would show productId at quantity 10.
+    const inventoryList = await request(app)
+      .get(`/api/v1/inventory?warehouseId=${warehouseId}`)
+      .set('Authorization', `Bearer ${token}`);
+    expect(inventoryList.body.data.items).toHaveLength(0);
   });
 });
