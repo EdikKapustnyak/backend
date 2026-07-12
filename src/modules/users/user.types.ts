@@ -15,7 +15,6 @@ export interface UserDocumentShape {
   passwordHash: string;
   role: Role;
   isActive: boolean;
-  refreshTokenHash: string | null;
   createdAt: Date;
   updatedAt: Date;
 }

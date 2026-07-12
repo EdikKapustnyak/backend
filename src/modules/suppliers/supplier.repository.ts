@@ -30,6 +30,14 @@ interface ListSuppliersFilter {
 }
 
 export const supplierRepository = {
+  /**
+   * Every supplier in a company, unpaginated. Used internally (e.g. to
+   * resolve names for a PDF report) - never exposed via an unbounded HTTP
+   * endpoint. Capped defensively.
+   */
+  async findAllInCompany(companyId: string): Promise<SupplierDocument[]> {
+    return SupplierModel.find({ companyId }).limit(5000).exec();
+  },
   async create(input: CreateSupplierInput): Promise<SupplierDocument> {
     return SupplierModel.create(input);
   },

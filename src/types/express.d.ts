@@ -4,6 +4,7 @@ export interface AuthContext {
   userId: string;
   companyId: string;
   role: Role;
+  sessionId: string;
 }
 
 declare global {

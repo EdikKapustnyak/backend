@@ -20,6 +20,20 @@ const envSchema = z.object({
 
   RATE_LIMIT_WINDOW_MS: z.coerce.number().int().positive().default(900_000),
   RATE_LIMIT_MAX: z.coerce.number().int().positive().default(100),
+
+  // Cloudflare R2 (S3-compatible) - only required for the receipts photo
+  // upload feature. Left optional here so the rest of the app (and the
+  // test suite) works without it configured; objectStorage.ts throws a
+  // clear error if these are missing at the point an upload is attempted.
+  R2_ACCOUNT_ID: z.string().optional(),
+  R2_ACCESS_KEY_ID: z.string().optional(),
+  R2_SECRET_ACCESS_KEY: z.string().optional(),
+  R2_BUCKET_NAME: z.string().optional(),
+
+  // Anthropic API - only required for the AI assistant features (waste
+  // analysis narrative, local events). Optional here for the same reason
+  // as the R2_* vars above - see anthropicClient.ts.
+  ANTHROPIC_API_KEY: z.string().optional(),
 });
 
 type Env = z.infer<typeof envSchema>;

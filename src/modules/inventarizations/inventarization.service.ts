@@ -10,6 +10,7 @@ import { warehouseRepository } from '../warehouses/warehouse.repository.js';
 import { productRepository } from '../products/product.repository.js';
 import { stockMovementRepository } from '../stock-movements/stock-movement.repository.js';
 import { StockMovementType, StockMovementReferenceType } from '../stock-movements/stock-movement.types.js';
+import { checkLowStock, flagDiscrepancyIfLarge } from '../notifications/notification.service.js';
 import { NotFoundError, ConflictError, ValidationAppError } from '../../errors/index.js';
 
 export function toPublicInventarization(doc: InventarizationDocument): PublicInventarization {
@@ -207,6 +208,24 @@ export async function completeInventarization(
             referenceId: existing._id.toString(),
             createdBy: userId,
           },
+          session,
+        );
+
+        await checkLowStock(
+          companyId,
+          item.productId.toString(),
+          existing.warehouseId.toString(),
+          adjusted.quantity,
+          session,
+        );
+
+        await flagDiscrepancyIfLarge(
+          companyId,
+          item.productId.toString(),
+          existing.warehouseId.toString(),
+          discrepancy,
+          item.systemQuantity,
+          existing._id.toString(),
           session,
         );
       }

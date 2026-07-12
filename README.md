@@ -26,12 +26,15 @@ Requires a running MongoDB instance reachable at `MONGODB_URI`.
 ## Folder structure
 
 ```
+assets/
+└── fonts/                 # DejaVu Sans (Regular + Bold) - embedded in PDF reports for Cyrillic support
 src/
 ├── server.ts            # entry point: DB connect, listen, graceful shutdown
 ├── app.ts                # Express app: middleware pipeline, routes, error handler
 ├── config/                # env validation (Zod), DB connection
 ├── modules/
-│   ├── auth/               # register-company, login, refresh, logout, me
+│   ├── auth/               # register-company, login, refresh, logout, me,
+│   │                        # + multi-device session list/revoke (session.*)
 │   ├── users/               # tenant-scoped user management (invite, list)
 │   ├── companies/            # company (tenant) model + repository
 │   ├── warehouses/           # tenant-scoped warehouse CRUD (soft delete)
@@ -41,12 +44,22 @@ src/
 │   ├── purchases/            # draft → completed/cancelled receipts; completion increases stock
 │   ├── write-offs/           # draft → confirmed/cancelled; confirmation decreases stock
 │   ├── stock-movements/      # read-only audit ledger, written by the modules below
-│   └── inventarizations/     # draft → completed/cancelled stock count; completion reconciles to fact
+│   ├── inventarizations/     # draft → completed/cancelled stock count; completion reconciles to fact
+│   ├── notifications/        # read-only + resolve; system-generated low-stock & discrepancy alerts
+│   ├── reports/              # PDF report generation (Purchases, Write-offs) - no model, reads other modules
+│   ├── receipts/             # receipt photo upload (R2 storage) - soft delete, presigned view URLs
+│   ├── companies/            # company (tenant) model/repository + GET/PATCH /companies/me (name, city, businessType)
+│   ├── analytics/            # waste analysis - deterministic Mongo aggregation + optional AI narrative
+│   └── local-events/         # AI + web-search event recommendations by city, cached 7 days per company
 ├── middlewares/            # authenticate, requireRole, enforceTenant, validate,
-│                            # isValidId, errorHandler, notFoundHandler,
+│                            # isValidId, upload (multer), errorHandler, notFoundHandler,
 │                            # rateLimiter, securityHeaders
 ├── errors/                 # AppError + typed subclasses
-├── utils/                  # jwt, password hashing, pagination, objectId (Zod), etc.
+├── utils/                  # jwt, password hashing, pagination, objectId (Zod),
+│                            # htmlToPdf (Puppeteer engine, not wired to a route
+│                            # yet), htmlReportTemplate, escapeHtml,
+│                            # tokenHash (SHA-256, for refresh tokens - NOT
+│                            # bcrypt, see point 24 below), etc.
 └── types/                  # Express Request augmentation (req.auth)
 tests/
 ├── setup.ts               # in-memory MongoDB replica-set lifecycle for tests
@@ -58,7 +71,17 @@ tests/
 ├── purchases.test.ts           # draft/complete/cancel workflow + stock increase + RBAC + transaction rollback
 ├── write-offs.test.ts           # draft/confirm/cancel workflow + role split + transaction rollback
 ├── stock-movements.test.ts       # movement generation from all sources + tenant isolation + rollback
-└── inventarizations.test.ts       # auto-populate/count/complete workflow + reconciliation + rollback
+├── inventarizations.test.ts       # auto-populate/count/complete workflow + reconciliation + rollback
+├── notifications.test.ts           # low-stock open/dedupe/auto-resolve + discrepancy alerts + RBAC
+├── reports.test.ts                  # PDF generation, filters, empty datasets, RBAC
+├── htmlToPdf.test.ts                 # escapeHtml + wrapReportHtml unit tests (Puppeteer engine)
+├── receipts.test.ts                   # upload/list/update/soft-delete + RBAC + tenant isolation (objectStorage mocked)
+├── objectStorage.test.ts              # unit test: clear error when R2 isn't configured (unmocked)
+├── companies.test.ts                   # GET/PATCH /companies/me + RBAC
+├── analytics.test.ts                    # waste aggregation correctness + tenant isolation + mocked AI narrative
+├── local-events.test.ts                  # cache-first/refresh/per-company isolation + mocked AI+web-search
+├── anthropicClient.test.ts                # unit test: clear error when ANTHROPIC_API_KEY isn't configured
+└── tokenHash.test.ts                       # regression guard for the bcrypt-truncation bug (point 24)
 ```
 
 Each future domain module (`notifications`) should follow the same shape as
@@ -92,8 +115,11 @@ through the invite endpoint.
 | POST | `/auth/register-company` | public | Creates a company (tenant) + its OWNER user |
 | POST | `/auth/login` | public | Returns access token + sets refresh cookie |
 | POST | `/auth/refresh` | refresh cookie | Rotates tokens |
-| POST | `/auth/logout` | access token | Revokes refresh session |
+| POST | `/auth/logout` | access token | Ends only the current device's session |
 | GET | `/auth/me` | access token | Current user |
+| GET | `/auth/sessions` | access token | List every active session (device/browser) for the caller, `isCurrent` flag on the one making the request |
+| DELETE | `/auth/sessions/:id` | access token | Revoke one specific session ("log out that device") |
+| DELETE | `/auth/sessions` | access token | Revoke every session, including the current one ("log out everywhere") |
 | GET | `/users` | access token | List users in the caller's company |
 | POST | `/users` | access token, `owner`/`admin` | Invite a new user into the caller's company |
 | GET | `/warehouses` | access token | Paginated list, supports `?page&perPage&search&isActive` |
@@ -134,6 +160,21 @@ through the invite endpoint.
 | PATCH | `/inventarizations/:id/count` | access token (**any role, including `employee`**) | Records counted quantities for one or more items (draft only) |
 | POST | `/inventarizations/:id/complete` | access token, `owner`/`admin`/`manager` | Requires every item counted; **atomically** reconciles `Inventory.quantity` to the counted value per item and logs a movement for each non-zero discrepancy |
 | POST | `/inventarizations/:id/cancel` | access token, `owner`/`admin`/`manager` | `draft` → `cancelled`; no stock effect |
+| GET | `/notifications` | access token | Paginated list, `?page&perPage&productId&warehouseId&type&status`. **Read-only** except resolve; see below |
+| GET | `/notifications/:id` | access token | Get one (tenant-scoped) |
+| PATCH | `/notifications/:id/resolve` | access token (**any role, including `employee`**) | Manually marks an open notification as resolved |
+| GET | `/receipts` | access token | Paginated list, `?page&perPage&type&category&from&to` — active receipts only |
+| POST | `/receipts` | access token (**any role, including `employee`**) | Multipart upload (`file` + `type`/`category`/`amount`/`date`/`notes`); JPEG/PNG/WEBP/PDF, max 10MB |
+| GET | `/receipts/:id` | access token | Get one with a fresh 15-minute presigned view URL |
+| PATCH | `/receipts/:id` | access token, `owner`/`admin`/`manager` | Update metadata (category/amount/date/notes) - not the file itself |
+| DELETE | `/receipts/:id` | access token, `owner`/`admin`/`manager` | Soft delete (file stays in R2) |
+| GET | `/companies/me` | access token | Own company profile (name, slug, city, businessType, subscriptionPlan, status) |
+| PATCH | `/companies/me` | access token, `owner`/`admin` | Update name/city/businessType |
+| GET | `/analytics/waste` | access token | Deterministic waste aggregation, `?from&to` (default: last 30 days) - by product, by reason, waste ratio vs. purchases |
+| GET | `/analytics/waste/narrative` | access token | Same numbers plus an AI-written analysis + recommendations (calls the Anthropic API) |
+| GET | `/local-events` | access token | AI + web search: events in the company's city that could drive foot traffic. `?refresh=true` bypasses the 7-day cache. Requires `city` set via `PATCH /companies/me` first (400 otherwise) |
+| GET | `/reports/purchases/pdf` | access token | Streams a PDF, `?from&to&supplierId&warehouseId&status` — table + totals by supplier |
+| GET | `/reports/write-offs/pdf` | access token | Streams a PDF, `?from&to&productId&warehouseId&reason&status` — table + totals by reason |
 
 Response envelope follows `Claude.md`:
 ```json
@@ -267,13 +308,279 @@ Response envelope follows `Claude.md`:
     `GET /inventarizations/:id` (items with system/counted/discrepancy) is
     the "report" from `PROJECT_DESCRIPTION.md`; a rendered PDF version is
     deferred to the planned PDF-export feature.
+16. **Notifications are entirely system-generated** — there is no
+    `POST /notifications`. Two kinds:
+    - **`low_stock`** is a *live* alert, not a log entry: it opens when
+      `Inventory.quantity` drops to/below `Product.minStockLevel`, and
+      auto-resolves the moment it rises back above — checked after **every**
+      operation that changes quantity (Purchases, Write-offs, manual
+      adjust, Inventarization, and even the initial `POST /inventory`
+      creation). A partial unique index (`{companyId, productId,
+      warehouseId, type}`, filtered to `status: "open"`) guarantees at most
+      one open `low_stock` alert per product+warehouse — repeated triggers
+      update its `quantity` in place (via upsert) instead of creating
+      duplicates; `tests/notifications.test.ts` asserts this directly.
+    - **`inventarization_discrepancy`** is a one-off alert created when
+      completing an inventarization, for any item whose discrepancy is
+      "large": `abs(discrepancy) >= 10` **or** `abs(discrepancy) /
+      systemQuantity >= 20%` (`LARGE_DISCREPANCY_ABS_THRESHOLD` /
+      `_PERCENT_THRESHOLD` in `notification.service.ts`). These thresholds
+      are hardcoded, not per-company configurable yet.
+
+    Both checks run inside the *same* transaction as the triggering stock
+    change (same pattern as Stock Movements), so a notification can never
+    exist for a state change that itself got rolled back. `PATCH
+    /notifications/:id/resolve` lets any authenticated tenant member
+    (including `employee`) manually dismiss an open notification of either
+    type.
+17. **PDF reports embed a bundled Cyrillic font.** Standard PDF fonts
+    (Helvetica, Times, Courier) have no Cyrillic glyphs — since product
+    names, write-off reasons, etc. are in Russian, `report.pdf.ts` embeds
+    **DejaVu Sans** (Regular + Bold) from `assets/fonts/` at the project
+    root (sibling to `src/` and `dist/`, referenced via a path computed
+    from `import.meta.url` so it resolves the same way in dev and in the
+    compiled build — see the comment at the top of that file). DejaVu Sans
+    ships under a permissive free license (embedding/redistribution
+    allowed, including commercially) and is already included in this
+    delivery under `assets/fonts/`. **If you move or restructure the
+    project, keep `assets/` as a sibling of `src/`/`dist/`, or update the
+    relative path in `report.pdf.ts`.**
+    Reports have no persistence of their own — `GET /reports/*/pdf` queries
+    `Purchase`/`WriteOff` directly (capped at 2,000 records per report,
+    `REPORT_MAX_RECORDS` in each repository) and resolves supplier/
+    warehouse/product **names** via one unpaginated-but-capped fetch each
+    (`findAllInCompany`, capped at 5,000), rather than one query per row.
+    Both reports include every status by default (draft/completed/
+    cancelled, etc.) with the status shown per row — filter with `?status=`
+    if you only want, say, completed purchases. Testing binary PDF output
+    with Supertest doesn't verify the rendered content (would need a PDF-
+    parsing library) — `tests/reports.test.ts` checks the response is a
+    structurally valid PDF (`%PDF` magic bytes, correct `Content-Type`) for
+    both populated and empty datasets, not what text ends up on the page.
+18. **A second PDF engine (Puppeteer/headless Chrome) is now in the
+    codebase but not wired to any route yet** — `src/utils/htmlToPdf.ts`
+    (`renderHtmlToPdf`, `closeHtmlToPdfEngine`), plus two small helpers:
+    `escapeHtml.ts` and `htmlReportTemplate.ts` (a base HTML page with
+    reusable table/heading CSS). This exists for a **future** report that
+    needs real CSS layout (logo, multi-column design, charts) rather than
+    pdfkit's manual text positioning — pdfkit remains what Purchases and
+    Write-offs reports use today, and is the better fit for straightforward
+    tabular reports.
+    - **A single headless Chrome instance is launched lazily and shared**
+      for the process lifetime (spinning up a fresh browser per request
+      would add ~1s+ of overhead to every call) — `getBrowser()` in
+      `htmlToPdf.ts`. `server.ts` now calls `closeHtmlToPdfEngine()` during
+      graceful shutdown so no orphaned Chrome process survives a
+      restart/deploy.
+    - **Cyrillic needs no special handling** here (unlike pdfkit) — Chrome
+      renders with normal system fonts.
+    - **Always run dynamic values through `escapeHtml()`** before
+      interpolating them into HTML passed to `renderHtmlToPdf` — product
+      names, notes, etc. are free text and could otherwise break the layout
+      or inject markup into the rendered PDF. `wrapReportHtml()` escapes
+      `title`/`companyName`/`subtitle` for you already; `bodyHtml` is
+      inserted raw, so escape anything dynamic that goes into it yourself.
+    - **`npm install` now downloads a full Chromium binary** (the
+      `puppeteer` package does this automatically, ~200+ MB) — expect a
+      slower, network-heavier install than before. For a smaller Docker
+      image and more control over Chrome's version/patching, consider
+      switching to `puppeteer-core` (no bundled browser) plus either a
+      Chrome-preinstalled base image (e.g. `ghcr.io/puppeteer/puppeteer`)
+      or a system Chrome install — not done here since this isn't wired up
+      yet and that decision is easier to make once there's a concrete
+      report driving it.
+    - Only `escapeHtml`/`wrapReportHtml` are unit-tested
+      (`tests/htmlToPdf.test.ts`) — `renderHtmlToPdf` itself isn't, since
+      that would mean launching a real browser in the test suite for code
+      nothing calls yet; add that test once a real report uses it.
+19. **Receipt photos are stored in Cloudflare R2** via
+    `src/utils/objectStorage.ts`, a thin wrapper around the S3-compatible
+    API. R2, AWS S3, and MinIO all speak the same protocol
+    (`@aws-sdk/client-s3`), so moving providers later - the plan is R2 now,
+    AWS S3 if/when needed - means changing the `R2_*` env vars and the
+    `endpoint` in `objectStorage.ts`, not rewriting the module.
+    - **Files are private, never publicly linked.** `GET /receipts` and
+      `GET /receipts/:id` generate a fresh presigned URL (15 min expiry)
+      each time via `getPresignedDownloadUrl` - there's no permanent public
+      URL for a receipt, since these are financial documents.
+    - **Upload goes through the API** (multipart/form-data, `multer` with
+      in-memory storage, field name `file`), not a direct-to-R2 presigned
+      upload - simpler to build and test end-to-end for now, at the cost of
+      routing file bytes through our server. Revisit if upload volume or
+      file size becomes a real concern.
+    - **Type/category split**: `type` is a fixed enum (`daily_revenue` /
+      `purchase` / `expense`) matching what was asked for (daily takings vs.
+      purchase receipts, plus a general "other expense" bucket); `category`
+      is free text (e.g. "аренда", "коммуналка") rather than a managed
+      taxonomy - avoids building a full Category module before there's a
+      concrete need for one.
+    - **No OCR / auto-extraction of amount or date from the photo** - both
+      are entered manually by whoever uploads. Automatic extraction (e.g.
+      via Claude's vision capability) is a natural upgrade once this basic
+      version is in use, not built now.
+    - **Soft delete only** - `DELETE` deactivates the DB record but never
+      calls `objectStorage.deleteObject`, so the file stays in R2. Avoids
+      accidental permanent loss of a financial record; means storage cost
+      accumulates over time for deleted receipts, which is an acceptable
+      trade for now.
+    - **Allowed types**: JPEG, PNG, WEBP, PDF (some "receipts" are scanned
+      PDFs, not just photos), capped at 10MB - both enforced in
+      `middlewares/upload.ts`.
+    - **R2 credentials are optional in `env.ts`**, not required like
+      `MONGODB_URI` - so the rest of the app (and the test suite) keeps
+      working without them configured; `objectStorage.ts` throws a clear
+      error only when an upload/presign is actually attempted without
+      credentials set (`tests/objectStorage.test.ts` checks this directly,
+      unmocked - it's the actual state of the test environment, since R2
+      vars aren't part of `tests/setup.ts`). `tests/receipts.test.ts` mocks
+      `objectStorage` (`vi.spyOn`) to test the HTTP layer without touching
+      real R2.
+20. **AI assistant is two independent features, both calling the Anthropic
+    API server-side** (`ANTHROPIC_API_KEY` - a billed-by-usage key from
+    [console.anthropic.com](https://console.anthropic.com/settings/keys),
+    not a claude.ai login; optional in `env.ts` like the R2 vars, same
+    "fails clearly at call time, doesn't block the rest of the app"
+    treatment - see `tests/anthropicClient.test.ts`). Both go through
+    `src/utils/anthropicClient.ts`, exported as an object
+    (`anthropicClient.askClaude` / `.askClaudeForJson`) specifically so
+    `vi.spyOn` can mock it reliably in tests, the same pattern already used
+    for `objectStorage` - a plain named-function export doesn't mock
+    reliably enough across Vite's ESM transform to bet the test suite on it.
+    - **`GET /analytics/waste`** is a two-layer design: the deterministic
+      layer (MongoDB aggregation over confirmed Write-offs, joined with
+      Product for an estimated cost, plus completed Purchases in the same
+      window for a waste-to-purchases ratio) is real numbers, no AI, and is
+      exactly what `GET /analytics/waste/narrative` also returns, plus a
+      `narrative` field where Claude turns those same numbers into a
+      written analysis + recommendations. **The model never computes
+      anything** - it's given the finished aggregation and asked to narrate
+      it, specifically to avoid hallucinated figures. Defaults to the last
+      30 days if `from`/`to` aren't given.
+    - **`GET /local-events`** needs `Company.city` set first (`PATCH
+      /companies/me` - 400 otherwise) and optionally `businessType` (free
+      text, e.g. "кофейня") to make results relevant. It calls Claude with
+      the `web_search_20250305` tool, asks for **strict JSON only**
+      (`{"events": [...]}`), and strips ```json fences before parsing in
+      case the model wraps its output anyway. Verify that tool version
+      string and the `MODEL` constant in `anthropicClient.ts` against
+      Anthropic's current docs occasionally - both can change.
+    - **Results are cached per company for 7 days** (`LocalEventsCache`,
+      one document per company, TTL-indexed so MongoDB deletes expired
+      entries automatically - no cleanup job needed) so a page reload
+      doesn't re-trigger a paid web-search call. `?refresh=true` forces a
+      fresh call. Two companies in the same city do **not** share a cache
+      entry - each pays for and gets its own (`tests/local-events.test.ts`
+      checks this explicitly), since `businessType` can differ and cached
+      results should always reflect what a specific company would see.
+    - **`Company.city`/`businessType`** are new optional fields, settable
+      at registration (`POST /auth/register-company`) or anytime after via
+      the new `GET`/`PATCH /companies/me` (added this round - there was no
+      company-profile endpoint before, only creation via registration).
+    - Extracted `WRITE_OFF_REASON_LABELS`/`WRITE_OFF_STATUS_LABELS`
+      (`write-off.labels.ts`) and `PURCHASE_STATUS_LABELS`
+      (`purchase.labels.ts`) out of `report.service.ts` into their own
+      files so `analytics.service.ts` could reuse the same Russian labels
+      instead of duplicating them - a small DRY cleanup alongside this
+      feature, not a behavior change.
+21. **Multi-device sessions are now fully wired** (previously the `Session`
+    model/repository existed but nothing used them - `auth.service.ts` was
+    still writing a single `refreshTokenHash` straight onto `User`, which
+    doesn't support "log out of all devices" at all). Every login/
+    registration now creates its own `Session` row; both the access and
+    refresh JWTs carry that session's id as `sid` (`jwt.ts`,
+    `req.auth.sessionId`). Consequences worth knowing:
+    - `POST /auth/logout` now ends **only the calling device's session** -
+      other devices stay signed in. Use `DELETE /auth/sessions` to sign out
+      everywhere at once.
+    - Refresh rotates the token **in place** on the same session (same
+      `sid`, new hash) - `sessionRepository.updateHash`. If an old,
+      already-rotated refresh token is replayed, or the session was
+      revoked, that one session is deleted defensively and only that
+      device needs to log in again.
+    - **Revocation is not instant for already-issued access tokens.**
+      `authenticate` only checks the JWT signature/expiry, not the session
+      table, so a revoked session's still-valid access token keeps working
+      until it naturally expires (`JWT_ACCESS_EXPIRES_IN`, 15m default).
+      Only the *refresh* token is checked against the session table. This
+      is the standard access/refresh tradeoff (short-lived access tokens
+      bound the exposure window) - full session invalidation is fast, but
+      not literally instantaneous.
+    - `Session` documents are TTL-indexed on `expiresAt` - MongoDB deletes
+      them automatically after they'd have expired anyway, no cleanup job
+      needed (same pattern as `LocalEventsCache`).
+    - `User.refreshTokenHash` and the repository methods built around it
+      (`findByIdWithRefreshHash`, `setRefreshTokenHash`) are gone -
+      `userRepository.findById` (untenanted - the refresh flow only has a
+      verified userId, not yet a companyId) replaces the one legitimate
+      remaining use case.
+    - `tests/auth.test.ts` gained coverage for token rotation, rotation
+      replay-rejection, multi-session creation, logout-scopes-to-one-
+      session, revoke-by-id, and revoke-all.
+22. **`city` is now required at registration**, not optional. This has a
+    real ripple effect worth knowing about if you're extending the test
+    suite: **every** test file that registers a company needs to supply a
+    `city` now, or registration itself 422s before the rest of the test
+    runs. All existing helpers were updated to pass a default; if you add a
+    new test file with its own registration helper, remember to include
+    `city`. `city` can still be changed (but not unset) via `PATCH
+    /companies/me` afterward.
+23. **Verified the configurable discrepancy thresholds are actually wired**,
+    not just present in the schema - added
+    `tests/notifications.test.ts > respects a per-company custom
+    discrepancy threshold`, which sets `largeDiscrepancyAbsThreshold` via
+    `PATCH /companies/me` and confirms a discrepancy that would NOT flag
+    under the default threshold DOES flag under the lowered custom one.
+    Low-stock was always configurable per-product (`Product.minStockLevel`,
+    set when creating/editing a product) - only the discrepancy threshold
+    was ever hardcoded. See `company.model.ts`
+    (`largeDiscrepancyAbsThreshold`/`largeDiscrepancyPercentThreshold`,
+    defaults 10 units / 20%) and `notification.service.ts`
+    (`flagDiscrepancyIfLarge`).
+24. **Fixed a real security bug: refresh tokens were hashed with bcrypt,
+    which silently truncates its input at 72 bytes.** A JWT refresh token
+    is typically 200+ characters. Its `sub`/`sid` claims (identical between
+    a token and its own rotated successor) come *before* the claims that
+    actually differ (`iat`/`exp`/`jti`) in the JSON payload, and that
+    shared prefix alone already exceeds 72 bytes - so bcrypt was hashing a
+    token and its rotated successor as the same effective input.
+    Concretely: after `POST /auth/refresh` rotated a session's token, the
+    **old, already-superseded token kept working** - rotation wasn't
+    actually revoking anything, silently defeating the "stale token reuse
+    is rejected" guarantee that's the whole point of rotation. Root-caused
+    via `tests/auth.test.ts > rejects reuse of an old refresh token after
+    it has been rotated`, which still exists and is what would catch a
+    regression here.
+    - **Fix**: refresh tokens are now hashed with SHA-256
+      (`src/utils/tokenHash.ts` - `hashToken`/`tokensMatch`, constant-time
+      compare via `crypto.timingSafeEqual`), not bcrypt. `utils/password.ts`
+      (bcrypt) is unchanged and remains correct for actual user passwords -
+      those are short, human-chosen, and specifically benefit from bcrypt's
+      slow, salted work factor. Refresh tokens are already high-entropy
+      random-ish secrets and don't need that; they need a hash that
+      considers the *entire* input, which SHA-256 does.
+    - `tests/tokenHash.test.ts` directly reproduces the bug shape (two
+      100+ byte strings sharing an identical 72+ byte prefix, differing
+      only in a suffix) as a regression guard, rather than only relying on
+      the slower, harder-to-diagnose end-to-end auth test to catch it.
+    - If you're hashing any other kind of token/secret (API keys, etc.)
+      anywhere in this codebase later, use `tokenHash.ts`, not
+      `password.ts` - the same truncation trap applies to anything longer
+      than 72 bytes.
 
 ## Not yet implemented (next stages, waiting for your go-ahead)
 
-- Notifications module.
-- Refresh-token/session table for multi-device logout.
-- Email delivery for invites.
-- PDF export, receipt photo uploads, AI assistant (planned after Notifications).
+- OCR/auto-extraction for receipt photos (amount/date from the image).
+- Direct-to-R2 presigned upload (skip routing file bytes through the API)
+  if upload volume ever warrants it.
+- Email delivery for invites (currently the invite issues a password
+  directly - see point 12 below).
+- Inventarization PDF report (only Purchases and Write-offs exist so far).
+- Wiring the Puppeteer engine (see point 18) up to an actual report.
+- Making the local-events cache duration (7 days) and waste-analytics
+  default lookback (30 days) configurable per company.
+- A "sales/revenue analysis" AI feature analogous to the waste one, once
+  there's a sales data source to analyze (there isn't one yet - this
+  project tracks purchases/stock/write-offs, not point-of-sale revenue).
 
 ## Running MongoDB locally (replica set required for transactions)
 

@@ -6,6 +6,7 @@ import { purchaseRepository } from './purchase.repository.js';
 import { inventoryRepository } from '../inventory/inventory.repository.js';
 import { stockMovementRepository } from '../stock-movements/stock-movement.repository.js';
 import { StockMovementType, StockMovementReferenceType } from '../stock-movements/stock-movement.types.js';
+import { checkLowStock } from '../notifications/notification.service.js';
 import { NotFoundError, ConflictError } from '../../errors/index.js';
 
 export function toPublicPurchase(purchase: PurchaseDocument): PublicPurchase {
@@ -90,6 +91,14 @@ export async function completePurchase(
             referenceId: completed._id.toString(),
             createdBy: userId,
           },
+          session,
+        );
+
+        await checkLowStock(
+          companyId,
+          item.productId.toString(),
+          completed.warehouseId.toString(),
+          updatedInventory.quantity,
           session,
         );
       }

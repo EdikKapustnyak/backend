@@ -30,6 +30,32 @@ const companySchema = new Schema<CompanyDocumentShape>(
       enum: Object.values(CompanyStatus),
       default: CompanyStatus.ACTIVE,
     },
+    city: {
+      type: String,
+      required: true,
+      trim: true,
+      minlength: 2,
+      maxlength: 100,
+    },
+    businessType: {
+      type: String,
+      trim: true,
+      maxlength: 100,
+      default: null,
+    },
+    largeDiscrepancyAbsThreshold: {
+      type: Number,
+      required: true,
+      min: 0,
+      default: 10,
+    },
+    largeDiscrepancyPercentThreshold: {
+      type: Number,
+      required: true,
+      min: 0,
+      max: 100,
+      default: 20,
+    },
   },
   { timestamps: true },
 );

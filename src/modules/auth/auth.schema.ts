@@ -13,6 +13,10 @@ export const registerCompanySchema = z.object({
   ownerName: z.string().trim().min(2).max(120),
   email: z.string().trim().toLowerCase().email(),
   password: passwordSchema,
+  // Required - used by the local-events AI feature. Editable later via
+  // PATCH /companies/me (but can't be unset back to null there either).
+  city: z.string().trim().min(2).max(100),
+  businessType: z.string().trim().max(100).optional(),
 });
 
 export const loginSchema = z.object({

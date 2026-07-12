@@ -1,4 +1,4 @@
-import type { ClientSession, FilterQuery } from 'mongoose';
+import { Types, type ClientSession, type FilterQuery } from 'mongoose';
 import { PurchaseModel, type PurchaseDocument } from './purchase.model.js';
 import { PurchaseStatus, type PurchaseDocumentShape, type PurchaseItemShape } from './purchase.types.js';
 import type { PaginationParams } from '../../utils/pagination.js';
@@ -32,11 +32,56 @@ interface ListPurchasesFilter {
   status?: PurchaseStatus;
 }
 
+interface PurchaseReportFilter {
+  companyId: string;
+  from?: Date;
+  to?: Date;
+  supplierId?: string;
+  warehouseId?: string;
+  status?: PurchaseStatus;
+}
+
+const REPORT_MAX_RECORDS = 2000;
+
 function computeTotalAmount(items: PurchaseItemInput[] | PurchaseItemShape[]): number {
   return items.reduce((sum, item) => sum + item.quantity * item.unitPrice, 0);
 }
 
 export const purchaseRepository = {
+  /**
+   * Unpaginated (but capped) fetch for PDF report generation - not exposed
+   * directly via a paginated HTTP list endpoint.
+   */
+  async findManyForReport(filter: PurchaseReportFilter): Promise<PurchaseDocument[]> {
+    const query: FilterQuery<PurchaseDocumentShape> = { companyId: filter.companyId };
+
+    if (filter.supplierId) query.supplierId = filter.supplierId;
+    if (filter.warehouseId) query.warehouseId = filter.warehouseId;
+    if (filter.status) query.status = filter.status;
+    if (filter.from || filter.to) {
+      query.createdAt = {};
+      if (filter.from) query.createdAt.$gte = filter.from;
+      if (filter.to) query.createdAt.$lte = filter.to;
+    }
+
+    return PurchaseModel.find(query).sort({ createdAt: 1 }).limit(REPORT_MAX_RECORDS).exec();
+  },
+
+  /** Sum of totalAmount for completed purchases in a period - used to compute a waste ratio. */
+  async getTotalCompletedAmount(companyId: string, from: Date, to: Date): Promise<number> {
+    const result = await PurchaseModel.aggregate<{ total: number }>([
+      {
+        $match: {
+          companyId: new Types.ObjectId(companyId),
+          status: PurchaseStatus.COMPLETED,
+          createdAt: { $gte: from, $lte: to },
+        },
+      },
+      { $group: { _id: null, total: { $sum: '$totalAmount' } } },
+    ]).exec();
+    return result[0]?.total ?? 0;
+  },
+
   async create(input: CreatePurchaseInput): Promise<PurchaseDocument> {
     return PurchaseModel.create({
       companyId: input.companyId,

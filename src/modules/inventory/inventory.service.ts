@@ -4,6 +4,7 @@ import type { PublicInventory } from './inventory.types.js';
 import { inventoryRepository } from './inventory.repository.js';
 import { stockMovementRepository } from '../stock-movements/stock-movement.repository.js';
 import { StockMovementType } from '../stock-movements/stock-movement.types.js';
+import { checkLowStock } from '../notifications/notification.service.js';
 import { NotFoundError, ConflictError } from '../../errors/index.js';
 
 export function toPublicInventory(inventory: InventoryDocument): PublicInventory {
@@ -18,6 +19,42 @@ export function toPublicInventory(inventory: InventoryDocument): PublicInventory
     createdAt: inventory.createdAt,
     updatedAt: inventory.updatedAt,
   };
+}
+
+/**
+ * Creates a new stock record and immediately checks whether its starting
+ * quantity is already at/below the product's minStockLevel (e.g. someone
+ * records a product they just started tracking with a low count). Wrapped
+ * in a transaction since it's now a two-document write (Inventory +
+ * possibly Notification).
+ */
+export async function createInventoryRecord(
+  companyId: string,
+  productId: string,
+  warehouseId: string,
+  quantity: number | undefined,
+): Promise<PublicInventory> {
+  const session = await mongoose.startSession();
+  let created: InventoryDocument | null = null;
+
+  try {
+    await session.withTransaction(async () => {
+      created = await inventoryRepository.create(
+        { companyId, productId, warehouseId, quantity },
+        session,
+      );
+
+      await checkLowStock(companyId, productId, warehouseId, created.quantity, session);
+    });
+  } finally {
+    await session.endSession();
+  }
+
+  if (!created) {
+    throw new ConflictError('Inventory creation failed unexpectedly');
+  }
+
+  return toPublicInventory(created);
 }
 
 /**
@@ -69,6 +106,14 @@ export async function adjustInventory(
             quantityAfter: updated.quantity,
             createdBy: userId,
           },
+          session,
+        );
+
+        await checkLowStock(
+          companyId,
+          updated.productId.toString(),
+          updated.warehouseId.toString(),
+          updated.quantity,
           session,
         );
       }

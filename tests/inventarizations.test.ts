@@ -16,6 +16,7 @@ interface Scenario {
 async function registerCompany(email: string, companyName: string): Promise<string> {
   const res = await request(app).post('/api/v1/auth/register-company').send({
     companyName,
+    city: 'Stavanger',
     ownerName: 'Owner',
     email,
     password: strongPassword,

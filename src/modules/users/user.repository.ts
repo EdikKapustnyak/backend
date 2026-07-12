@@ -12,9 +12,7 @@ interface CreateUserInput {
 export const userRepository = {
   /** Includes passwordHash - only for authentication flows. */
   async findByEmailWithSecrets(email: string): Promise<UserDocument | null> {
-    return UserModel.findOne({ email: email.toLowerCase() })
-      .select('+passwordHash +refreshTokenHash')
-      .exec();
+    return UserModel.findOne({ email: email.toLowerCase() }).select('+passwordHash').exec();
   },
 
   async findByEmail(email: string): Promise<UserDocument | null> {
@@ -26,9 +24,14 @@ export const userRepository = {
     return UserModel.findOne({ _id: id, companyId }).exec();
   },
 
-  /** Includes refreshTokenHash - only for token rotation/verification. */
-  async findByIdWithRefreshHash(id: string): Promise<UserDocument | null> {
-    return UserModel.findById(id).select('+refreshTokenHash').exec();
+  /**
+   * Untenanted lookup - only for the refresh-token flow, where a verified
+   * JWT gives us a trustworthy userId but not yet a companyId (the token
+   * doesn't carry one). Every other lookup in this repository requires
+   * companyId; this is the one deliberate exception.
+   */
+  async findById(id: string): Promise<UserDocument | null> {
+    return UserModel.findById(id).exec();
   },
 
   async create(input: CreateUserInput): Promise<UserDocument> {
@@ -38,10 +41,6 @@ export const userRepository = {
   async existsByEmail(email: string): Promise<boolean> {
     const count = await UserModel.countDocuments({ email: email.toLowerCase() }).exec();
     return count > 0;
-  },
-
-  async setRefreshTokenHash(userId: string, hash: string | null): Promise<void> {
-    await UserModel.updateOne({ _id: userId }, { refreshTokenHash: hash }).exec();
   },
 
   async findManyInCompany(companyId: string): Promise<UserDocument[]> {

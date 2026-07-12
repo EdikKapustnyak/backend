@@ -22,6 +22,14 @@ interface ListWarehousesFilter {
 }
 
 export const warehouseRepository = {
+  /**
+   * Every warehouse in a company, unpaginated. Used internally (e.g. to
+   * resolve names for a PDF report) - never exposed via an unbounded HTTP
+   * endpoint. Capped defensively.
+   */
+  async findAllInCompany(companyId: string): Promise<WarehouseDocument[]> {
+    return WarehouseModel.find({ companyId }).limit(5000).exec();
+  },
   async create(input: CreateWarehouseInput): Promise<WarehouseDocument> {
     return WarehouseModel.create(input);
   },

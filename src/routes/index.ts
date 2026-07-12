@@ -9,11 +9,20 @@ import { purchaseRouter } from '../modules/purchases/purchase.routes.js';
 import { writeOffRouter } from '../modules/write-offs/write-off.routes.js';
 import { stockMovementRouter } from '../modules/stock-movements/stock-movement.routes.js';
 import { inventarizationRouter } from '../modules/inventarizations/inventarization.routes.js';
+import { notificationRouter } from '../modules/notifications/notification.routes.js';
+import { reportRouter } from '../modules/reports/report.routes.js';
+import { receiptRouter } from '../modules/receipts/receipt.routes.js';
+import { companyRouter } from '../modules/companies/company.routes.js';
+import { analyticsRouter } from '../modules/analytics/analytics.routes.js';
+import { localEventRouter } from '../modules/local-events/local-event.routes.js';
 
 export const apiRouter = Router();
 
 apiRouter.use('/auth', authRouter);
 apiRouter.use('/users', userRouter);
+apiRouter.use('/companies', companyRouter);
+apiRouter.use('/analytics', analyticsRouter);
+apiRouter.use('/local-events', localEventRouter);
 apiRouter.use('/warehouses', warehouseRouter);
 apiRouter.use('/products', productRouter);
 apiRouter.use('/inventory', inventoryRouter);
@@ -22,3 +31,6 @@ apiRouter.use('/purchases', purchaseRouter);
 apiRouter.use('/write-offs', writeOffRouter);
 apiRouter.use('/stock-movements', stockMovementRouter);
 apiRouter.use('/inventarizations', inventarizationRouter);
+apiRouter.use('/notifications', notificationRouter);
+apiRouter.use('/reports', reportRouter);
+apiRouter.use('/receipts', receiptRouter);

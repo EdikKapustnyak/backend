@@ -12,6 +12,7 @@ function registerCompanyPayload(overrides: Partial<Record<string, string>> = {})
     ownerName: 'Alice Owner',
     email: 'alice@acme.test',
     password: strongPassword,
+    city: 'Stavanger',
     ...overrides,
   };
 }
@@ -45,6 +46,17 @@ describe('POST /api/v1/auth/register-company', () => {
     const res = await request(app)
       .post('/api/v1/auth/register-company')
       .send(registerCompanyPayload({ password: 'weak' }));
+
+    expect(res.status).toBe(422);
+    expect(res.body.error.code).toBe('VALIDATION_ERROR');
+  });
+
+  it('rejects registration without a city', async () => {
+    const payload = registerCompanyPayload();
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    delete (payload as any).city;
+
+    const res = await request(app).post('/api/v1/auth/register-company').send(payload);
 
     expect(res.status).toBe(422);
     expect(res.body.error.code).toBe('VALIDATION_ERROR');
@@ -154,5 +166,139 @@ describe('GET /api/v1/auth/me', () => {
   it('rejects requests without an access token', async () => {
     const res = await request(app).get('/api/v1/auth/me');
     expect(res.status).toBe(401);
+  });
+});
+
+function extractRefreshCookie(res: request.Response): string {
+  const setCookie = res.headers['set-cookie'] as unknown as string[] | undefined;
+  const cookie = setCookie?.find((c) => c.startsWith('refreshToken='));
+  if (!cookie) throw new Error('No refreshToken cookie in response - test setup is broken');
+  return cookie.split(';')[0] as string;
+}
+
+describe('POST /api/v1/auth/refresh', () => {
+  it('rotates the refresh token and returns a new access token', async () => {
+    const registerRes = await request(app)
+      .post('/api/v1/auth/register-company')
+      .send(registerCompanyPayload({ email: 'refresh1@acme.test' }));
+    const cookie = extractRefreshCookie(registerRes);
+
+    const res = await request(app).post('/api/v1/auth/refresh').set('Cookie', cookie);
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(res.body.data.accessToken).toEqual(expect.any(String));
+    expect(res.headers['set-cookie']?.[0]).toMatch(/refreshToken=/);
+  });
+
+  it('rejects a missing refresh token', async () => {
+    const res = await request(app).post('/api/v1/auth/refresh');
+    expect(res.status).toBe(401);
+  });
+
+  it('rejects reuse of an old refresh token after it has been rotated', async () => {
+    const registerRes = await request(app)
+      .post('/api/v1/auth/register-company')
+      .send(registerCompanyPayload({ email: 'refresh2@acme.test' }));
+    const oldCookie = extractRefreshCookie(registerRes);
+
+    await request(app).post('/api/v1/auth/refresh').set('Cookie', oldCookie);
+    const reuse = await request(app).post('/api/v1/auth/refresh').set('Cookie', oldCookie);
+
+    expect(reuse.status).toBe(401);
+  });
+});
+
+describe('Multi-device sessions', () => {
+  it('creates a separate, independently-listed session per login', async () => {
+    await request(app)
+      .post('/api/v1/auth/register-company')
+      .send(registerCompanyPayload({ email: 'multi1@acme.test' }));
+    const login1 = await request(app)
+      .post('/api/v1/auth/login')
+      .send({ email: 'multi1@acme.test', password: strongPassword });
+    await request(app)
+      .post('/api/v1/auth/login')
+      .send({ email: 'multi1@acme.test', password: strongPassword });
+
+    const res = await request(app)
+      .get('/api/v1/auth/sessions')
+      .set('Authorization', `Bearer ${login1.body.data.accessToken as string}`);
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    // registration + 2 logins = 3 sessions total
+    expect(res.body.data).toHaveLength(3);
+    expect(res.body.data.filter((s: { isCurrent: boolean }) => s.isCurrent)).toHaveLength(1);
+  });
+
+  it('logout ends only the current session - other devices stay signed in', async () => {
+    const register = await request(app)
+      .post('/api/v1/auth/register-company')
+      .send(registerCompanyPayload({ email: 'logout1@acme.test' }));
+    const login2 = await request(app)
+      .post('/api/v1/auth/login')
+      .send({ email: 'logout1@acme.test', password: strongPassword });
+
+    await request(app)
+      .post('/api/v1/auth/logout')
+      .set('Authorization', `Bearer ${register.body.data.accessToken as string}`);
+
+    const stillWorks = await request(app)
+      .get('/api/v1/auth/me')
+      .set('Authorization', `Bearer ${login2.body.data.accessToken as string}`);
+    expect(stillWorks.status).toBe(200);
+  });
+
+  it('revokes one specific session by id, leaving others untouched', async () => {
+    const register = await request(app)
+      .post('/api/v1/auth/register-company')
+      .send(registerCompanyPayload({ email: 'revoke1@acme.test' }));
+    const login2 = await request(app)
+      .post('/api/v1/auth/login')
+      .send({ email: 'revoke1@acme.test', password: strongPassword });
+
+    const list = await request(app)
+      .get('/api/v1/auth/sessions')
+      .set('Authorization', `Bearer ${register.body.data.accessToken as string}`);
+    const otherSession = list.body.data.find((s: { isCurrent: boolean }) => !s.isCurrent);
+
+    const revokeRes = await request(app)
+      .delete(`/api/v1/auth/sessions/${otherSession.id as string}`)
+      .set('Authorization', `Bearer ${register.body.data.accessToken as string}`);
+    expect(revokeRes.status, JSON.stringify(revokeRes.body)).toBe(200);
+
+    // The revoked session's refresh token must no longer work.
+    const login2Cookie = extractRefreshCookie(login2);
+    const refreshAttempt = await request(app).post('/api/v1/auth/refresh').set('Cookie', login2Cookie);
+    expect(refreshAttempt.status).toBe(401);
+  });
+
+  it('rejects revoking a session that does not exist', async () => {
+    const register = await request(app)
+      .post('/api/v1/auth/register-company')
+      .send(registerCompanyPayload({ email: 'revoke2@acme.test' }));
+
+    const res = await request(app)
+      .delete('/api/v1/auth/sessions/000000000000000000000000')
+      .set('Authorization', `Bearer ${register.body.data.accessToken as string}`);
+
+    expect(res.status).toBe(404);
+  });
+
+  it('DELETE /auth/sessions logs out of every device at once', async () => {
+    const register = await request(app)
+      .post('/api/v1/auth/register-company')
+      .send(registerCompanyPayload({ email: 'logoutall@acme.test' }));
+    await request(app)
+      .post('/api/v1/auth/login')
+      .send({ email: 'logoutall@acme.test', password: strongPassword });
+
+    const res = await request(app)
+      .delete('/api/v1/auth/sessions')
+      .set('Authorization', `Bearer ${register.body.data.accessToken as string}`);
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+
+    const registerCookie = extractRefreshCookie(register);
+    const refreshAttempt = await request(app).post('/api/v1/auth/refresh').set('Cookie', registerCookie);
+    expect(refreshAttempt.status).toBe(401);
   });
 });

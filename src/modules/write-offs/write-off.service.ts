@@ -5,6 +5,7 @@ import { writeOffRepository } from './write-off.repository.js';
 import { inventoryRepository } from '../inventory/inventory.repository.js';
 import { stockMovementRepository } from '../stock-movements/stock-movement.repository.js';
 import { StockMovementType, StockMovementReferenceType } from '../stock-movements/stock-movement.types.js';
+import { checkLowStock } from '../notifications/notification.service.js';
 import { NotFoundError, ConflictError } from '../../errors/index.js';
 
 export function toPublicWriteOff(writeOff: WriteOffDocument): PublicWriteOff {
@@ -83,6 +84,14 @@ export async function confirmWriteOff(
           referenceId: existing._id.toString(),
           createdBy: confirmedBy,
         },
+        session,
+      );
+
+      await checkLowStock(
+        companyId,
+        existing.productId.toString(),
+        existing.warehouseId.toString(),
+        adjusted.quantity,
         session,
       );
 

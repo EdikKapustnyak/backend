@@ -38,6 +38,14 @@ interface ListProductsFilter {
 }
 
 export const productRepository = {
+  /**
+   * Every product in a company, unpaginated. Used internally (e.g. to
+   * resolve names for a PDF report) - never exposed via an unbounded HTTP
+   * endpoint. Capped defensively.
+   */
+  async findAllInCompany(companyId: string): Promise<ProductDocument[]> {
+    return ProductModel.find({ companyId }).limit(5000).exec();
+  },
   async create(input: CreateProductInput): Promise<ProductDocument> {
     return ProductModel.create(input);
   },

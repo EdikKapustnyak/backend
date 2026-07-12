@@ -40,11 +40,6 @@ const userSchema = new Schema<UserDocumentShape>(
       type: Boolean,
       default: true,
     },
-    refreshTokenHash: {
-      type: String,
-      default: null,
-      select: false,
-    },
   },
   { timestamps: true },
 );

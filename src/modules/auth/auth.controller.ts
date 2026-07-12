@@ -1,5 +1,6 @@
 import type { CookieOptions, Request, Response } from 'express';
 import { authService } from './auth.service.js';
+import { sessionService } from './session.service.js';
 import { ctrlWrapper } from '../../utils/ctrlWrapper.js';
 import { sendSuccess } from '../../utils/apiResponse.js';
 import { durationToMs } from '../../utils/duration.js';
@@ -31,8 +32,16 @@ function clearRefreshCookie(res: Response): void {
   });
 }
 
+/** Best-effort device metadata for the Session row - never used for auth decisions, display only. */
+function sessionMetaFromRequest(req: Request): { userAgent: string | null; ipAddress: string | null } {
+  return {
+    userAgent: req.headers['user-agent'] ?? null,
+    ipAddress: req.ip ?? null,
+  };
+}
+
 export const registerCompany = ctrlWrapper(async (req: Request, res: Response) => {
-  const result = await authService.registerCompany(req.body);
+  const result = await authService.registerCompany(req.body, sessionMetaFromRequest(req));
   setRefreshCookie(res, result.tokens.refreshToken);
   sendSuccess(
     res,
@@ -43,7 +52,7 @@ export const registerCompany = ctrlWrapper(async (req: Request, res: Response) =
 });
 
 export const login = ctrlWrapper(async (req: Request, res: Response) => {
-  const result = await authService.login(req.body);
+  const result = await authService.login(req.body, sessionMetaFromRequest(req));
   setRefreshCookie(res, result.tokens.refreshToken);
   sendSuccess(res, { user: result.user, accessToken: result.tokens.accessToken }, 'Logged in successfully');
 });
@@ -59,9 +68,10 @@ export const refresh = ctrlWrapper(async (req: Request, res: Response) => {
   sendSuccess(res, { user: result.user, accessToken: result.tokens.accessToken }, 'Token refreshed');
 });
 
+/** Ends only the current device's session - see logoutAllDevices for "log out everywhere". */
 export const logout = ctrlWrapper(async (req: Request, res: Response) => {
   if (req.auth) {
-    await authService.logout(req.auth.userId);
+    await authService.logout(req.auth.userId, req.auth.sessionId);
   }
   clearRefreshCookie(res);
   sendSuccess(res, null, 'Logged out successfully');
@@ -78,4 +88,29 @@ export const me = ctrlWrapper(async (req: Request, res: Response) => {
   }
 
   sendSuccess(res, toPublicUser(user), 'Current user');
+});
+
+export const listSessions = ctrlWrapper(async (req: Request, res: Response) => {
+  if (!req.auth) throw new UnauthorizedError();
+
+  const sessions = await sessionService.listSessions(req.auth.userId, req.auth.sessionId);
+  sendSuccess(res, sessions);
+});
+
+export const revokeSession = ctrlWrapper(async (req: Request, res: Response) => {
+  if (!req.auth) throw new UnauthorizedError();
+
+  const revoked = await sessionService.revokeSession(req.auth.userId, req.params['id'] as string);
+  if (!revoked) throw new NotFoundError('Session not found');
+
+  sendSuccess(res, null, 'Session revoked');
+});
+
+/** "Log out everywhere" - revokes every session, including the current one, so the caller is logged out too. */
+export const logoutAllDevices = ctrlWrapper(async (req: Request, res: Response) => {
+  if (!req.auth) throw new UnauthorizedError();
+
+  await sessionService.revokeAllSessions(req.auth.userId);
+  clearRefreshCookie(res);
+  sendSuccess(res, null, 'Logged out of all devices');
 });

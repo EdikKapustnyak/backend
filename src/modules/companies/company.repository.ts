@@ -5,6 +5,16 @@ interface CreateCompanyInput {
   name: string;
   slug: string;
   subscriptionPlan?: SubscriptionPlan;
+  city: string;
+  businessType?: string | null;
+}
+
+interface UpdateCompanyProfileInput {
+  name?: string;
+  city?: string;
+  businessType?: string | null;
+  largeDiscrepancyAbsThreshold?: number;
+  largeDiscrepancyPercentThreshold?: number;
 }
 
 export const companyRepository = {
@@ -23,5 +33,16 @@ export const companyRepository = {
   async existsBySlug(slug: string): Promise<boolean> {
     const count = await CompanyModel.countDocuments({ slug }).exec();
     return count > 0;
+  },
+
+  async updateProfile(
+    id: string,
+    input: UpdateCompanyProfileInput,
+  ): Promise<CompanyDocument | null> {
+    return CompanyModel.findByIdAndUpdate(
+      id,
+      { $set: input },
+      { new: true, runValidators: true },
+    ).exec();
   },
 };

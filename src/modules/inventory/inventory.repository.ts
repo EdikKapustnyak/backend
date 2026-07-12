@@ -17,14 +17,20 @@ interface ListInventoryFilter {
 }
 
 export const inventoryRepository = {
-  async create(input: CreateInventoryInput): Promise<InventoryDocument> {
-    return InventoryModel.create({
-      companyId: input.companyId,
-      productId: input.productId,
-      warehouseId: input.warehouseId,
-      quantity: input.quantity ?? 0,
-      reserved: 0,
-    });
+  async create(input: CreateInventoryInput, session?: ClientSession): Promise<InventoryDocument> {
+    const [doc] = await InventoryModel.create(
+      [
+        {
+          companyId: input.companyId,
+          productId: input.productId,
+          warehouseId: input.warehouseId,
+          quantity: input.quantity ?? 0,
+          reserved: 0,
+        },
+      ],
+      { session },
+    );
+    return doc as InventoryDocument;
   },
 
   /** Tenant-scoped lookup - always requires companyId to prevent cross-tenant access. */

@@ -3,7 +3,11 @@ import { ctrlWrapper } from '../../utils/ctrlWrapper.js';
 import { sendSuccess } from '../../utils/apiResponse.js';
 import { parsePaginationParams, calculatePaginationData } from '../../utils/pagination.js';
 import { inventoryRepository } from './inventory.repository.js';
-import { toPublicInventory, adjustInventory as adjustInventoryService } from './inventory.service.js';
+import {
+  toPublicInventory,
+  adjustInventory as adjustInventoryService,
+  createInventoryRecord,
+} from './inventory.service.js';
 import { productRepository } from '../products/product.repository.js';
 import { warehouseRepository } from '../warehouses/warehouse.repository.js';
 import { UnauthorizedError, NotFoundError } from '../../errors/index.js';
@@ -25,14 +29,14 @@ export const createInventory = ctrlWrapper(async (req: Request, res: Response) =
   );
   if (!warehouse) throw new NotFoundError('Warehouse not found');
 
-  const inventory = await inventoryRepository.create({
-    companyId: req.auth.companyId,
-    productId: req.body.productId,
-    warehouseId: req.body.warehouseId,
-    quantity: req.body.quantity,
-  });
+  const result = await createInventoryRecord(
+    req.auth.companyId,
+    req.body.productId,
+    req.body.warehouseId,
+    req.body.quantity,
+  );
 
-  sendSuccess(res, toPublicInventory(inventory), 'Inventory record created', 201);
+  sendSuccess(res, result, 'Inventory record created', 201);
 });
 
 export const listInventory = ctrlWrapper(async (req: Request, res: Response) => {

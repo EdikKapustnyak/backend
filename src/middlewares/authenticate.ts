@@ -28,6 +28,7 @@ export function authenticate(req: Request, _res: Response, next: NextFunction): 
       userId: payload.sub,
       companyId: payload.companyId,
       role: payload.role,
+      sessionId: payload.sid,
     };
     next();
   } catch (err) {

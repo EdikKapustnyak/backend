@@ -1,6 +1,7 @@
 import { createApp } from './app.js';
 import { env } from './config/env.js';
 import { connectDatabase, disconnectDatabase } from './config/db.js';
+import { closeHtmlToPdfEngine } from './utils/htmlToPdf.js';
 import { logger } from './utils/logger.js';
 
 async function main(): Promise<void> {
@@ -15,6 +16,7 @@ async function main(): Promise<void> {
   const shutdown = async (signal: string): Promise<void> => {
     logger.info(`Received ${signal}, shutting down gracefully...`);
     server.close(async () => {
+      await closeHtmlToPdfEngine();
       await disconnectDatabase();
       logger.info('Shutdown complete');
       process.exit(0);
