@@ -10,7 +10,7 @@ registry.registerPath({
   tags: [TAG],
   summary: 'AI + web-search event recommendations for the company city',
   description:
-    "Finds events in the company's city that could affect foot traffic. Cached 7 days per company (not per city - two companies in the same city get independent results if their businessType differs). Requires the Business plan or higher - see requireFeature('ai'). Requires `city` set on the company (already required at registration).",
+    "Finds events in the company's city that could affect foot traffic. Cached 7 days per company (not per city - two companies in the same city get independent results if their businessType differs). Available on every plan. Requires `city` set on the company (already required at registration).",
   request: {
     query: z.object({
       refresh: z

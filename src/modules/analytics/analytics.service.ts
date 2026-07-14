@@ -1,5 +1,6 @@
 import { writeOffRepository, type WasteByProduct, type WasteByReason } from '../write-offs/write-off.repository.js';
 import { purchaseRepository } from '../purchases/purchase.repository.js';
+import { companyRepository } from '../companies/company.repository.js';
 import { WRITE_OFF_REASON_LABELS } from '../write-offs/write-off.labels.js';
 import { anthropicClient } from '../../utils/anthropicClient.js';
 
@@ -21,7 +22,14 @@ export interface WasteAnalyticsSummary {
   byReason: WasteByReasonPublic[];
 }
 
-const DEFAULT_LOOKBACK_DAYS = 30;
+/** Fallback only - matches the schema default in company.model.ts. Used if the company can't be found for some reason (defensive; company always exists for a valid, authenticated companyId in practice). */
+const FALLBACK_LOOKBACK_DAYS = 30;
+
+async function computeDefaultRangeFrom(companyId: string, rangeTo: Date): Promise<Date> {
+  const company = await companyRepository.findById(companyId);
+  const lookbackDays = company?.wasteAnalyticsDefaultLookbackDays ?? FALLBACK_LOOKBACK_DAYS;
+  return new Date(rangeTo.getTime() - lookbackDays * 24 * 60 * 60 * 1000);
+}
 
 /**
  * The deterministic data layer: pure MongoDB aggregations, no AI involved.
@@ -33,7 +41,7 @@ export async function getWasteAnalytics(
   to?: Date,
 ): Promise<WasteAnalyticsSummary> {
   const rangeTo = to ?? new Date();
-  const rangeFrom = from ?? new Date(rangeTo.getTime() - DEFAULT_LOOKBACK_DAYS * 24 * 60 * 60 * 1000);
+  const rangeFrom = from ?? (await computeDefaultRangeFrom(companyId, rangeTo));
 
   const [byProduct, byReasonRaw, totalPurchases] = await Promise.all([
     writeOffRepository.getWasteByProduct(companyId, rangeFrom, rangeTo),

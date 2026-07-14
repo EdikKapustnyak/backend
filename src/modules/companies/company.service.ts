@@ -14,6 +14,8 @@ export function toPublicCompany(company: CompanyDocument): PublicCompany {
     businessType: company.businessType,
     largeDiscrepancyAbsThreshold: company.largeDiscrepancyAbsThreshold,
     largeDiscrepancyPercentThreshold: company.largeDiscrepancyPercentThreshold,
+    wasteAnalyticsDefaultLookbackDays: company.wasteAnalyticsDefaultLookbackDays,
+    localEventsCacheTtlDays: company.localEventsCacheTtlDays,
     createdAt: company.createdAt,
     updatedAt: company.updatedAt,
   };

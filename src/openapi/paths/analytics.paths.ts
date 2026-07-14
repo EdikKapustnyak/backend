@@ -27,7 +27,7 @@ registry.registerPath({
   tags: [TAG],
   summary: 'Waste analytics + AI-written narrative',
   description:
-    'Same numbers as GET /analytics/waste, plus an AI-written analysis and recommendations (calls the Anthropic API). Requires the Business plan or higher - see requireFeature(\'ai\').',
+    'Same numbers as GET /analytics/waste, plus an AI-written analysis and recommendations (calls the Anthropic API). Available on every plan.',
   request: { query: wasteAnalyticsQuerySchema },
   responses: {
     200: {

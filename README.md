@@ -53,15 +53,17 @@ src/
 │   ├── receipts/             # receipt photo upload (R2 storage) - soft delete, presigned view URLs
 │   ├── companies/            # company (tenant) model/repository + GET/PATCH /companies/me (name, city, businessType)
 │   ├── analytics/            # waste analysis - deterministic Mongo aggregation + optional AI narrative
-│   │                          # (narrative gated behind Business+, see requireFeature)
+│   │                          # (available on every plan - see billing/plan.config.ts)
 │   ├── local-events/         # AI + web-search event recommendations by city, cached 7 days per company
-│   │                          # (entire endpoint gated behind Business+, see requireFeature)
+│   │                          # (available on every plan - see billing/plan.config.ts)
 │   └── billing/              # Stripe checkout/portal/webhook + plan.config.ts (PLAN_LIMITS,
 │                              # pricing) - single source of truth for tier limits/feature
 │                              # gates, see ADR-0001 and the "Billing & subscriptions" section
 ├── middlewares/            # authenticate, requireRole, requireActiveSubscription (blocks
-│                            # writes for past_due/suspended companies, reads always pass),
-│                            # requireFeature (plan-gated features, e.g. 'ai'), enforceTenant,
+│                            # writes for past_due/suspended companies, reads always pass;
+│                            # also lazily escalates past_due -> suspended past the grace
+│                            # period), requireFeature (plan-gated features - not currently
+│                            # wired to any route, kept as reusable infra), enforceTenant,
 │                            # validate, isValidId, upload (multer), errorHandler,
 │                            # notFoundHandler, rateLimiter, securityHeaders
 ├── errors/                 # AppError + typed subclasses
@@ -178,18 +180,29 @@ summary.
   (wired into every router except `/auth` and `/billing` itself) blocks
   writes for `past_due`/`suspended` companies but always allows reads -
   a company can still see its data and fix its payment method, just not
-  create more data it isn't paying for. There's no scheduled job that
-  escalates `past_due` → `suspended` after N days yet - see ADR-0001,
-  Action Items.
-- **Tier limits**: `billing/plan.config.ts` (`PLAN_LIMITS`) is the single
-  source of truth - `maxWarehouses`/`maxUsers` (enforced in
+  create more data it isn't paying for. **Confirmed: 7-day grace period**
+  (`GRACE_PERIOD_DAYS` in `billing/plan.config.ts`) - `past_due` auto-
+  escalates to `suspended` once it elapses, checked lazily wherever
+  company status is actually read for enforcement (`requireActiveSubscription`,
+  `authService.login`) rather than via a cron job - there's no job
+  scheduler anywhere in this codebase (TTL-indexed collections rely on
+  MongoDB's own background sweep instead), so this follows the same
+  shape. A company that stops making requests/logging in entirely never
+  gets escalated this way - Stripe's own subscription cancellation
+  (`customer.subscription.deleted` → `suspended`) is the actual backstop
+  for that case.
+- **Tier limits** (confirmed business numbers, not ADR-0001's originally
+  illustrative ones): Basic - 1 warehouse, 35 users. Business - 5
+  warehouses, 150 users. Enterprise - unlimited. `billing/plan.config.ts`
+  (`PLAN_LIMITS`) is the single source of truth, enforced in
   `warehouse.controller.ts` / `user.service.ts` via
-  `billingService.assertResourceLimit`) and `aiFeatures` (enforced by the
-  `requireFeature('ai')` middleware on `GET /analytics/waste/narrative`
-  and `GET /local-events` - **not** on the free, deterministic
-  `GET /analytics/waste`). The specific numbers are illustrative, from the
-  ADR, not a final business decision - change them in one place and every
-  enforcement point picks it up.
+  `billingService.assertResourceLimit`. **AI features (waste analytics
+  narrative, local events) are available on every plan** - ADR-0001
+  originally proposed gating them behind Business+, but that was
+  overridden; `requireFeature('ai')` is no longer wired into either
+  route as a result (see `middlewares/requireFeature.ts`), though the
+  `PlanLimits.aiFeatures` flag and the middleware itself stay in the
+  codebase in case a future feature needs gating.
 
 ## API (v1, prefix `/api/v1`)
 
@@ -258,8 +271,8 @@ summary.
 | GET | `/companies/me` | access token | Own company profile (name, slug, city, businessType, subscriptionPlan, status) |
 | PATCH | `/companies/me` | access token, `owner`/`admin` | Update name/city/businessType |
 | GET | `/analytics/waste` | access token | Deterministic waste aggregation, `?from&to` (default: last 30 days) - by product, by reason, waste ratio vs. purchases |
-| GET | `/analytics/waste/narrative` | access token, Business+ plan | Same numbers plus an AI-written analysis + recommendations (calls the Anthropic API). 403 on the Basic plan - see requireFeature('ai') |
-| GET | `/local-events` | access token, Business+ plan | AI + web search: events in the company's city that could drive foot traffic. `?refresh=true` bypasses the 7-day cache. Requires `city` set via `PATCH /companies/me` first (400 otherwise). 403 on the Basic plan - see requireFeature('ai') |
+| GET | `/analytics/waste/narrative` | access token | Same numbers plus an AI-written analysis + recommendations (calls the Anthropic API). Available on every plan |
+| GET | `/local-events` | access token | AI + web search: events in the company's city that could drive foot traffic. `?refresh=true` bypasses the 7-day cache. Requires `city` set via `PATCH /companies/me` first (400 otherwise). Available on every plan |
 | GET | `/reports/purchases/pdf` | access token | Streams a PDF, `?from&to&supplierId&warehouseId&status` — table + totals by supplier |
 | GET | `/reports/write-offs/pdf` | access token | Streams a PDF, `?from&to&productId&warehouseId&reason&status` — table + totals by reason |
 | GET | `/reports/inventarizations/pdf` | access token | Streams a PDF, `?from&to&warehouseId&status` — one row per inventarization (items/counted/large-discrepancy counts), large-discrepancy cells highlighted in red, totals by warehouse. "Large" uses the same company thresholds (`largeDiscrepancyAbsThreshold`/`Percent`) as the `inventarization_discrepancy` notification |
@@ -729,14 +742,16 @@ versioned API resource).
   there's a sales data source to analyze (there isn't one yet - this
   project tracks purchases/stock/write-offs, not point-of-sale revenue).
 - Payments/subscriptions core flow is implemented (see "Billing &
-  subscriptions" section, ADR-0001) - what's still missing from that ADR:
-  a scheduled job to escalate `past_due` → `suspended` after the grace
-  period elapses (checked lazily today, only at request time, so a
-  company that stops making requests entirely never gets escalated);
-  an admin-facing manual override (comp a plan, extend a grace period);
-  proration handling for mid-cycle plan changes (Stripe's Customer Portal
-  handles cancel/update-card today, but not an in-app upgrade/downgrade
-  flow).
+  subscriptions" section, ADR-0001), including the 7-day grace-period
+  escalation - what's still missing from that ADR: an admin-facing
+  manual override (comp a plan, extend a grace period); proration
+  handling for mid-cycle plan changes (Stripe's Customer Portal handles
+  cancel/update-card today, but not an in-app upgrade/downgrade flow); a
+  real scheduled job for the grace-period escalation instead of the
+  current lazy check (only runs when company status is actually read -
+  a company that stops making requests/logging in entirely never gets
+  escalated this way; Stripe's own subscription cancellation is the
+  actual backstop for that case).
 
 ## Running MongoDB locally (replica set required for transactions)
 

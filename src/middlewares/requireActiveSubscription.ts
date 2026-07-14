@@ -2,6 +2,7 @@ import type { NextFunction, Request, Response } from 'express';
 import { UnauthorizedError, ForbiddenError, NotFoundError } from '../errors/index.js';
 import { companyRepository } from '../modules/companies/company.repository.js';
 import { CompanyStatus } from '../modules/companies/company.types.js';
+import { billingService } from '../modules/billing/billing.service.js';
 
 const SAFE_METHODS = new Set(['GET', 'HEAD', 'OPTIONS']);
 
@@ -28,11 +29,16 @@ export async function requireActiveSubscription(
     return;
   }
 
-  const company = await companyRepository.findById(req.auth.companyId);
+  let company = await companyRepository.findById(req.auth.companyId);
   if (!company) {
     next(new NotFoundError('Company not found'));
     return;
   }
+
+  // Lazily escalates PAST_DUE -> SUSPENDED once the 7-day grace period
+  // (billing/plan.config.ts, GRACE_PERIOD_DAYS) has elapsed - see the
+  // function's own doc comment for why this is lazy rather than a cron job.
+  company = await billingService.escalateIfGracePeriodElapsed(company);
 
   if (company.status === CompanyStatus.SUSPENDED) {
     next(new ForbiddenError('This company account is suspended. Contact billing to reactivate.'));

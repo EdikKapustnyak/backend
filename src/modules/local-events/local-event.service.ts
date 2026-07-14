@@ -41,9 +41,10 @@ async function fetchEventsFromAI(
 
 /**
  * Cache-first: returns the cached result if one exists and hasn't expired
- * (7 days - see local-event.repository.ts), otherwise calls Claude with web
- * search enabled and caches the result. Pass forceRefresh to skip the cache
- * even if it's still fresh.
+ * (Company.localEventsCacheTtlDays, configurable per company via PATCH
+ * /companies/me - defaults to 7 days), otherwise calls Claude with web
+ * search enabled and caches the result. Pass forceRefresh to skip the
+ * cache even if it's still fresh.
  */
 export async function getLocalEvents(
   companyId: string,
@@ -73,6 +74,7 @@ export async function getLocalEvents(
     company.city,
     company.businessType,
     events,
+    company.localEventsCacheTtlDays,
   );
 
   return toPublicLocalEvents(saved, false);

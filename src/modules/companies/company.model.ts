@@ -73,6 +73,20 @@ const companySchema = new Schema<CompanyDocumentShape>(
       max: 100,
       default: 20,
     },
+    wasteAnalyticsDefaultLookbackDays: {
+      type: Number,
+      required: true,
+      min: 1,
+      max: 365,
+      default: 30,
+    },
+    localEventsCacheTtlDays: {
+      type: Number,
+      required: true,
+      min: 1,
+      max: 30,
+      default: 7,
+    },
   },
   { timestamps: true },
 );

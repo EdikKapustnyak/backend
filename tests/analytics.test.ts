@@ -1,9 +1,9 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import request from 'supertest';
+import { Types } from 'mongoose';
 import { createApp } from '../src/app.js';
 import { anthropicClient } from '../src/utils/anthropicClient.js';
-import { CompanyModel } from '../src/modules/companies/company.model.js';
-import { SubscriptionPlan } from '../src/modules/companies/company.types.js';
+import { WriteOffModel } from '../src/modules/write-offs/write-off.model.js';
 
 const app = createApp();
 const strongPassword = 'Sup3rSecret!';
@@ -46,16 +46,6 @@ async function createWarehouse(token: string, name: string): Promise<string> {
   return res.body.data.id as string;
 }
 
-/** The AI narrative endpoint is gated behind Business+ (see requireFeature('ai')) - Basic is the default plan every test company starts on. */
-async function upgradeToBusinessPlan(token: string): Promise<void> {
-  const me = await request(app).get('/api/v1/companies/me').set('Authorization', `Bearer ${token}`);
-  const companyId = me.body.data.id as string;
-  await CompanyModel.updateOne(
-    { _id: companyId },
-    { $set: { subscriptionPlan: SubscriptionPlan.BUSINESS } },
-  ).exec();
-}
-
 async function createInventory(
   token: string,
   productId: string,
@@ -74,7 +64,7 @@ async function confirmedWriteOff(
   warehouseId: string,
   quantity: number,
   reason: string,
-): Promise<void> {
+): Promise<string> {
   const draft = await request(app)
     .post('/api/v1/write-offs')
     .set('Authorization', `Bearer ${token}`)
@@ -82,6 +72,7 @@ async function confirmedWriteOff(
   await request(app)
     .post(`/api/v1/write-offs/${draft.body.data.id}/confirm`)
     .set('Authorization', `Bearer ${token}`);
+  return draft.body.data.id as string;
 }
 
 describe('GET /api/v1/analytics/waste', () => {
@@ -177,7 +168,6 @@ describe('Multi-tenant isolation for waste analytics', () => {
 describe('GET /api/v1/analytics/waste/narrative', () => {
   it('includes the deterministic numbers plus a mocked AI narrative', async () => {
     const token = await registerCompany('owner5@an.test', 'AN Co 5');
-    await upgradeToBusinessPlan(token);
     const productId = await createProduct(token, 'SKU-5', 10);
     const warehouseId = await createWarehouse(token, 'Main');
     await createInventory(token, productId, warehouseId, 50);
@@ -193,14 +183,50 @@ describe('GET /api/v1/analytics/waste/narrative', () => {
     expect(askClaudeSpy).toHaveBeenCalledTimes(1);
   });
 
-  it('rejects a Basic-plan company with 403 (AI narrative requires Business+)', async () => {
+  it('is available on the default Basic plan too (AI features are not plan-gated - confirmed decision)', async () => {
     const token = await registerCompany('owner6@an.test', 'AN Co 6');
 
     const res = await request(app)
       .get('/api/v1/analytics/waste/narrative')
       .set('Authorization', `Bearer ${token}`);
 
-    expect(res.status).toBe(403);
-    expect(askClaudeSpy).not.toHaveBeenCalled();
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(askClaudeSpy).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('configurable default lookback (Company.wasteAnalyticsDefaultLookbackDays)', () => {
+  it('excludes a write-off older than the default 30-day lookback, but includes it once the company widens the window', async () => {
+    const token = await registerCompany('owner7@an.test', 'AN Co 7');
+    const productId = await createProduct(token, 'SKU-7', 10);
+    const warehouseId = await createWarehouse(token, 'Main');
+    await createInventory(token, productId, warehouseId, 100);
+    const writeOffId = await confirmedWriteOff(token, productId, warehouseId, 5, 'damaged');
+
+    // Mongoose marks the auto-generated `createdAt` immutable when
+    // `timestamps: true` is set (write-off.model.ts) - a Mongoose-level
+    // updateOne silently ignores an attempt to change it, regardless of
+    // skipTenantScope. Going through the raw driver collection (same
+    // bypass tests/setup.ts uses for its own reason) sidesteps Mongoose's
+    // schema casting/immutability enforcement entirely.
+    await WriteOffModel.collection.updateOne(
+      { _id: new Types.ObjectId(writeOffId) },
+      { $set: { createdAt: new Date(Date.now() - 40 * 24 * 60 * 60 * 1000) } },
+    );
+
+    const defaultRes = await request(app)
+      .get('/api/v1/analytics/waste')
+      .set('Authorization', `Bearer ${token}`);
+    expect(defaultRes.body.data.totalQuantity).toBe(0);
+
+    await request(app)
+      .patch('/api/v1/companies/me')
+      .set('Authorization', `Bearer ${token}`)
+      .send({ wasteAnalyticsDefaultLookbackDays: 60 });
+
+    const widenedRes = await request(app)
+      .get('/api/v1/analytics/waste')
+      .set('Authorization', `Bearer ${token}`);
+    expect(widenedRes.body.data.totalQuantity).toBe(5);
   });
 });

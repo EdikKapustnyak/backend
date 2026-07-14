@@ -84,6 +84,8 @@ export const publicCompanySchema = registry.register(
     businessType: z.string().nullable(),
     largeDiscrepancyAbsThreshold: z.number(),
     largeDiscrepancyPercentThreshold: z.number(),
+    wasteAnalyticsDefaultLookbackDays: z.number().openapi({ description: 'Default lookback (days) for GET /analytics/waste(/narrative) when `from` is omitted' }),
+    localEventsCacheTtlDays: z.number().openapi({ description: 'How many days a GET /local-events result is cached' }),
     createdAt: isoDate,
     updatedAt: isoDate,
   }),

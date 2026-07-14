@@ -15,6 +15,8 @@ interface UpdateCompanyProfileInput {
   businessType?: string | null;
   largeDiscrepancyAbsThreshold?: number;
   largeDiscrepancyPercentThreshold?: number;
+  wasteAnalyticsDefaultLookbackDays?: number;
+  localEventsCacheTtlDays?: number;
 }
 
 interface UpdateSubscriptionStateInput {

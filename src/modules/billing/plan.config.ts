@@ -2,26 +2,44 @@ import { SubscriptionPlan } from '../companies/company.types.js';
 
 /**
  * Single source of truth for what each plan technically restricts - see
- * ADR-0001 (docs/adr/0001-payments-and-subscriptions.md) for the reasoning.
- * These specific numbers are a starting proposal from that ADR, not a
- * final business decision - change them here and every enforcement point
- * (requireFeature, the warehouse/user resource-limit checks) picks it up
- * automatically, no other file needs to change.
+ * ADR-0001 (docs/adr/0001-payments-and-subscriptions.md) for the original
+ * proposal and the "Billing & subscriptions" README section for the
+ * confirmed decision. Change a number here and every enforcement point
+ * (the warehouse/user resource-limit checks) picks it up automatically,
+ * no other file needs to change.
  */
 export interface PlanLimits {
   /** null = unlimited */
   maxWarehouses: number | null;
   /** null = unlimited */
   maxUsers: number | null;
-  /** Gates the AI assistant (waste analytics narrative + local events) - the only per-call cost this app doesn't control per company. */
+  /**
+   * Kept as a per-plan flag (not hardcoded true everywhere) even though
+   * every plan is currently true - confirmed decision: AI features (waste
+   * analytics narrative, local events) are available on every plan, not
+   * gated behind Business+ as ADR-0001 originally proposed. `requireFeature`
+   * (middlewares/requireFeature.ts) is no longer wired to any route as a
+   * result, but stays in the codebase as reusable infrastructure for a
+   * future feature gate - see its own doc comment.
+   */
   aiFeatures: boolean;
 }
 
+/** Confirmed business decision (not ADR-0001's illustrative numbers anymore). */
 export const PLAN_LIMITS: Record<SubscriptionPlan, PlanLimits> = {
-  [SubscriptionPlan.BASIC]: { maxWarehouses: 1, maxUsers: 3, aiFeatures: false },
-  [SubscriptionPlan.BUSINESS]: { maxWarehouses: 5, maxUsers: 15, aiFeatures: true },
+  [SubscriptionPlan.BASIC]: { maxWarehouses: 1, maxUsers: 35, aiFeatures: true },
+  [SubscriptionPlan.BUSINESS]: { maxWarehouses: 5, maxUsers: 150, aiFeatures: true },
   [SubscriptionPlan.ENTERPRISE]: { maxWarehouses: null, maxUsers: null, aiFeatures: true },
 };
+
+/**
+ * Confirmed business decision: how long a company stays in PAST_DUE
+ * (reads work, writes blocked - see requireActiveSubscription) after a
+ * failed payment before being automatically escalated to SUSPENDED
+ * (nothing works). See companies/companyStatusEscalation.ts for where
+ * this is actually applied.
+ */
+export const GRACE_PERIOD_DAYS = 7;
 
 export type BillingPeriodMonths = 1 | 3 | 6 | 12;
 

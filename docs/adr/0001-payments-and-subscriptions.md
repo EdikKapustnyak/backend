@@ -1,8 +1,8 @@
 # ADR-0001: Payments & Subscriptions
 
-**Status:** Accepted (Decision Area 1 confirmed: Stripe; Areas 2 and 3
-implemented using this ADR's proposed numbers/behavior - see Action Items
-for what's still open)
+**Status:** Accepted and implemented (Decision Areas 1–3 all confirmed
+with final numbers - see Action Items 1–3; Area 2's AI-gating proposal
+was specifically overridden, see item 2. Only Action Item 9 remains open.)
 **Date:** 2026-07-13
 **Deciders:** kapusta (project owner)
 
@@ -225,17 +225,22 @@ avoids needing a job scheduler this project doesn't have yet).
 ## Action Items
 
 1. [x] Confirm provider — **Stripe**, confirmed.
-2. [ ] Confirm tier limits and actual numbers — implemented using this
-       ADR's proposed numbers (`billing/plan.config.ts`), still a
-       starting proposal, not a final business decision. Change the
-       numbers there whenever you decide; every enforcement point reads
-       from that one file.
-3. [ ] Confirm grace-period length — implemented as "no fixed length yet":
-       a company enters `PAST_DUE` on payment failure and stays there
-       (writes blocked, reads fine) until either payment succeeds or you
-       manually suspend it. The "auto-escalate to `suspended` after N
-       days" half of this decision isn't built - see the README's "Not
-       yet implemented" section.
+2. [x] Confirm tier limits and actual numbers — **confirmed**: Basic 1
+       warehouse/35 users, Business 5 warehouses/150 users, Enterprise
+       unlimited (`billing/plan.config.ts`, `PLAN_LIMITS`). Also
+       confirmed, overriding this ADR's original Decision Area 2
+       proposal: **AI features (waste analytics narrative, local events)
+       are available on every plan**, not gated behind Business+ -
+       `requireFeature('ai')` is no longer wired into either route (see
+       `middlewares/requireFeature.ts`'s own doc comment); the mechanism
+       stays in the codebase for a future feature gate if one comes up.
+3. [x] Confirm grace-period length — **confirmed: 7 days**
+       (`GRACE_PERIOD_DAYS`, `billing/plan.config.ts`). A company enters
+       `PAST_DUE` on payment failure (writes blocked, reads fine); once
+       7 days pass, `billingService.escalateIfGracePeriodElapsed` flips
+       it to `SUSPENDED` the next time company status is read for
+       enforcement (`requireActiveSubscription`, `authService.login`) -
+       see item 8 below for why this is lazy, not a scheduled job.
 4. [x] Scaffold the `billing` module - done (`types/schema/service/
        controller/routes`; no `model.ts` - subscription state lives on
        `Company` itself, not a separate collection, since a company has
@@ -247,8 +252,18 @@ avoids needing a job scheduler this project doesn't have yet).
        at warehouse creation and user invite - done.
 7. [x] Wire the webhook endpoint (raw body, signature verification,
        mounted before the JSON body-parser) - done, see `app.ts`.
-8. [ ] Build the scheduled/lazy job that escalates `PAST_DUE` →
-       `SUSPENDED` once a grace period actually elapses (depends on #3).
+8. [x] Build the escalation from `PAST_DUE` → `SUSPENDED` once the grace
+       period elapses - done, but lazily rather than as a scheduled job:
+       there's no cron/job scheduler anywhere in this codebase (TTL-
+       indexed collections rely on MongoDB's own background sweep
+       instead), so this follows the same "check when the value is
+       actually read" shape - see `escalateIfGracePeriodElapsed` in
+       `billing.service.ts`. A company that stops making requests/
+       logging in entirely never gets escalated this way; Stripe's own
+       subscription cancellation (`customer.subscription.deleted` →
+       `SUSPENDED`) remains the actual backstop for that case. A real
+       scheduled job is a possible future upgrade if that gap matters in
+       practice, not something ruled out.
 9. [ ] Decide whether Basic should ever require checkout at all, or stay
        a true no-payment-method-on-file free tier indefinitely, as
        implemented today.

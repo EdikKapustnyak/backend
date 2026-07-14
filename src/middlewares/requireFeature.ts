@@ -6,11 +6,16 @@ import { PLAN_LIMITS } from '../modules/billing/plan.config.js';
 type Feature = 'ai';
 
 /**
+ * Not currently wired to any route - confirmed decision (see
+ * billing/plan.config.ts) made AI available on every plan, so the one
+ * feature this was built for (`'ai'`) never fails its check anymore.
+ * Left in place as ready-to-use infrastructure for a future plan-gated
+ * feature - add a case to the `feature === ...` ternary below and wire
+ * `requireFeature('whatever')` into a route when that need shows up.
+ *
  * Must run after `authenticate`. Fetches the company fresh (not from the
  * JWT) since plan changes take effect immediately on the next request,
- * not on next login. Only 'ai' exists today (see plan.config.ts,
- * PlanLimits.aiFeatures) - add a case here if a second gated feature
- * shows up later.
+ * not on next login.
  */
 export function requireFeature(feature: Feature) {
   return async (req: Request, _res: Response, next: NextFunction): Promise<void> => {
@@ -31,7 +36,7 @@ export function requireFeature(feature: Feature) {
     if (!enabled) {
       next(
         new ForbiddenError(
-          `This feature requires the Business plan or higher (your company is on ${company.subscriptionPlan}). Upgrade to continue.`,
+          `This feature isn't available on the ${company.subscriptionPlan} plan. Upgrade to continue.`,
         ),
       );
       return;

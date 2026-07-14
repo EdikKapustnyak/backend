@@ -6,6 +6,7 @@ import { stripeClient } from '../src/utils/stripeClient.js';
 import { billingService } from '../src/modules/billing/billing.service.js';
 import { CompanyModel } from '../src/modules/companies/company.model.js';
 import { CompanyStatus, SubscriptionPlan } from '../src/modules/companies/company.types.js';
+import { PLAN_LIMITS } from '../src/modules/billing/plan.config.js';
 
 const app = createApp();
 const strongPassword = 'Sup3rSecret!';
@@ -281,6 +282,44 @@ describe('requireActiveSubscription', () => {
     expect(res.status).toBe(403);
   });
 
+  it('auto-escalates to suspended once the 7-day grace period has elapsed', async () => {
+    const { token, companyId } = await registerCompany('owner13b@bill.test', 'Bill Co 13b');
+    const eightDaysAgo = new Date(Date.now() - 8 * 24 * 60 * 60 * 1000);
+    await CompanyModel.updateOne(
+      { _id: companyId },
+      { $set: { status: CompanyStatus.PAST_DUE, pastDueSince: eightDaysAgo } },
+    ).exec();
+
+    const res = await request(app)
+      .post('/api/v1/warehouses')
+      .set('Authorization', `Bearer ${token}`)
+      .send({ name: 'Blocked' });
+    expect(res.status).toBe(403);
+    expect(res.body.error.message).toMatch(/suspended/i);
+
+    const company = await CompanyModel.findById(companyId).exec();
+    expect(company?.status).toBe(CompanyStatus.SUSPENDED);
+  });
+
+  it('does not escalate before the grace period has elapsed', async () => {
+    const { token, companyId } = await registerCompany('owner13c@bill.test', 'Bill Co 13c');
+    const threeDaysAgo = new Date(Date.now() - 3 * 24 * 60 * 60 * 1000);
+    await CompanyModel.updateOne(
+      { _id: companyId },
+      { $set: { status: CompanyStatus.PAST_DUE, pastDueSince: threeDaysAgo } },
+    ).exec();
+
+    const res = await request(app)
+      .post('/api/v1/warehouses')
+      .set('Authorization', `Bearer ${token}`)
+      .send({ name: 'Blocked' });
+    expect(res.status).toBe(403);
+    expect(res.body.error.message).toMatch(/past due/i);
+
+    const company = await CompanyModel.findById(companyId).exec();
+    expect(company?.status).toBe(CompanyStatus.PAST_DUE);
+  });
+
   it('still allows the billing router for a past_due company (it must stay reachable to fix payment)', async () => {
     const { token, companyId } = await registerCompany('owner14@bill.test', 'Bill Co 14');
     await CompanyModel.updateOne(
@@ -295,6 +334,48 @@ describe('requireActiveSubscription', () => {
     const res = await request(app).post('/api/v1/billing/portal').set('Authorization', `Bearer ${token}`);
 
     expect(res.status, JSON.stringify(res.body)).toBe(200);
+  });
+});
+
+describe('login + grace period escalation', () => {
+  it('allows login for a past_due company (still within grace period)', async () => {
+    const { token, companyId } = await registerCompany('owner15b@bill.test', 'Bill Co 15b');
+    await CompanyModel.updateOne({ _id: companyId }, { $set: { status: CompanyStatus.PAST_DUE } }).exec();
+
+    const res = await request(app)
+      .post('/api/v1/auth/login')
+      .send({ email: 'owner15b@bill.test', password: strongPassword });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+  });
+
+  it('escalates to suspended on login once the grace period has elapsed, then rejects that same login', async () => {
+    const { companyId } = await registerCompany('owner15c@bill.test', 'Bill Co 15c');
+    const eightDaysAgo = new Date(Date.now() - 8 * 24 * 60 * 60 * 1000);
+    await CompanyModel.updateOne(
+      { _id: companyId },
+      { $set: { status: CompanyStatus.PAST_DUE, pastDueSince: eightDaysAgo } },
+    ).exec();
+
+    const res = await request(app)
+      .post('/api/v1/auth/login')
+      .send({ email: 'owner15c@bill.test', password: strongPassword });
+
+    expect(res.status).toBe(403);
+
+    const company = await CompanyModel.findById(companyId).exec();
+    expect(company?.status).toBe(CompanyStatus.SUSPENDED);
+  });
+
+  it('rejects login outright for an already-suspended company', async () => {
+    const { companyId } = await registerCompany('owner15d@bill.test', 'Bill Co 15d');
+    await CompanyModel.updateOne({ _id: companyId }, { $set: { status: CompanyStatus.SUSPENDED } }).exec();
+
+    const res = await request(app)
+      .post('/api/v1/auth/login')
+      .send({ email: 'owner15d@bill.test', password: strongPassword });
+
+    expect(res.status).toBe(403);
   });
 });
 
@@ -333,23 +414,46 @@ describe('resource limits (Basic plan)', () => {
     expect(res.status).toBe(201);
   });
 
-  it('rejects a 4th user (owner + 3 invites) on Basic', async () => {
-    const { token } = await registerCompany('owner17@bill.test', 'Bill Co 17');
-    await request(app)
-      .post('/api/v1/users')
-      .set('Authorization', `Bearer ${token}`)
-      .send({ name: 'E1', email: 'e1@bill.test', role: 'employee' });
-    await request(app)
-      .post('/api/v1/users')
-      .set('Authorization', `Bearer ${token}`)
-      .send({ name: 'E2', email: 'e2@bill.test', role: 'employee' });
+  it('matches the confirmed business plan limits (guards against config drift)', () => {
+    // Not an integration test of the enforcement mechanism (see the next
+    // test for that) - just a guard so the numbers in plan.config.ts can't
+    // silently drift from what was actually decided.
+    expect(PLAN_LIMITS[SubscriptionPlan.BASIC]).toEqual({ maxWarehouses: 1, maxUsers: 35, aiFeatures: true });
+    expect(PLAN_LIMITS[SubscriptionPlan.BUSINESS]).toEqual({ maxWarehouses: 5, maxUsers: 150, aiFeatures: true });
+    expect(PLAN_LIMITS[SubscriptionPlan.ENTERPRISE]).toEqual({
+      maxWarehouses: null,
+      maxUsers: null,
+      aiFeatures: true,
+    });
+  });
 
-    // owner + 2 invites = 3, already at the Basic limit.
-    const res = await request(app)
-      .post('/api/v1/users')
-      .set('Authorization', `Bearer ${token}`)
-      .send({ name: 'E3', email: 'e3@bill.test', role: 'employee' });
+  it('rejects inviting past the user limit', async () => {
+    // Basic's real limit (35) is impractical to hit with real HTTP invite
+    // calls in a fast test - temporarily lower it to exercise the same
+    // enforcement mechanism (userService.inviteNewUser ->
+    // billingService.assertResourceLimit('users', ...)) cheaply, and
+    // restore it no matter how the test turns out.
+    const original = PLAN_LIMITS[SubscriptionPlan.BASIC].maxUsers;
+    PLAN_LIMITS[SubscriptionPlan.BASIC].maxUsers = 2;
 
-    expect(res.status).toBe(403);
+    try {
+      const { token } = await registerCompany('owner17@bill.test', 'Bill Co 17');
+
+      // Owner already counts as 1 user - one more invite reaches the
+      // temporary limit of 2.
+      const firstInvite = await request(app)
+        .post('/api/v1/users')
+        .set('Authorization', `Bearer ${token}`)
+        .send({ name: 'E1', email: 'e1@bill.test', role: 'employee' });
+      expect(firstInvite.status).toBe(201);
+
+      const secondInvite = await request(app)
+        .post('/api/v1/users')
+        .set('Authorization', `Bearer ${token}`)
+        .send({ name: 'E2', email: 'e2@bill.test', role: 'employee' });
+      expect(secondInvite.status).toBe(403);
+    } finally {
+      PLAN_LIMITS[SubscriptionPlan.BASIC].maxUsers = original;
+    }
   });
 });

@@ -2,7 +2,6 @@ import { Router } from 'express';
 import * as analyticsController from './analytics.controller.js';
 import { authenticate } from '../../middlewares/authenticate.js';
 import { requireActiveSubscription } from '../../middlewares/requireActiveSubscription.js';
-import { requireFeature } from '../../middlewares/requireFeature.js';
 import { validate } from '../../middlewares/validate.js';
 import { wasteAnalyticsQuerySchema } from './analytics.schema.js';
 
@@ -19,10 +18,11 @@ analyticsRouter.get(
 );
 
 // Same numbers plus an AI-written narrative + recommendations - slower,
-// costs an Anthropic API call, gated behind the Business+ plan.
+// costs an Anthropic API call. Available on every plan (confirmed decision -
+// ADR-0001 originally proposed gating this behind Business+, see
+// billing/plan.config.ts for where that was overridden).
 analyticsRouter.get(
   '/waste/narrative',
-  requireFeature('ai'),
   validate({ query: wasteAnalyticsQuerySchema }),
   analyticsController.wasteAnalyticsNarrative,
 );

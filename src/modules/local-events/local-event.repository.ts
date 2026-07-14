@@ -4,8 +4,6 @@ import {
 } from './local-event.model.js';
 import type { LocalEventItem } from './local-event.types.js';
 
-const CACHE_TTL_DAYS = 7;
-
 export const localEventRepository = {
   /** A cache entry for this company that hasn't expired yet, if one exists. */
   async findFreshByCompany(companyId: string): Promise<LocalEventsCacheDocument | null> {
@@ -15,15 +13,16 @@ export const localEventRepository = {
     }).exec();
   },
 
-  /** One cache entry per company - always overwritten with the latest result. */
+  /** One cache entry per company - always overwritten with the latest result. `cacheTtlDays` comes from the company's own configured Company.localEventsCacheTtlDays (see local-event.service.ts). */
   async upsert(
     companyId: string,
     city: string,
     businessType: string | null,
     events: LocalEventItem[],
+    cacheTtlDays: number,
   ): Promise<LocalEventsCacheDocument> {
     const generatedAt = new Date();
-    const expiresAt = new Date(generatedAt.getTime() + CACHE_TTL_DAYS * 24 * 60 * 60 * 1000);
+    const expiresAt = new Date(generatedAt.getTime() + cacheTtlDays * 24 * 60 * 60 * 1000);
 
     const updated = await LocalEventsCacheModel.findOneAndUpdate(
       { companyId },

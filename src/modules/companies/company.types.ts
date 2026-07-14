@@ -40,6 +40,10 @@ export interface CompanyDocumentShape {
   largeDiscrepancyAbsThreshold: number;
   /** A discrepancy of at least this % of the counted item's systemQuantity is flagged as "large". Stored as 0-100, not 0-1. */
   largeDiscrepancyPercentThreshold: number;
+  /** How many days GET /analytics/waste(/narrative) looks back by default when `from` isn't given. */
+  wasteAnalyticsDefaultLookbackDays: number;
+  /** How many days a GET /local-events result is cached before the next request calls the AI again. */
+  localEventsCacheTtlDays: number;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -56,6 +60,8 @@ export interface PublicCompany {
   businessType: string | null;
   largeDiscrepancyAbsThreshold: number;
   largeDiscrepancyPercentThreshold: number;
+  wasteAnalyticsDefaultLookbackDays: number;
+  localEventsCacheTtlDays: number;
   createdAt: Date;
   updatedAt: Date;
 }

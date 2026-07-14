@@ -3,6 +3,7 @@ import { companyRepository } from '../companies/company.repository.js';
 import { userRepository } from '../users/user.repository.js';
 import { inviteRepository } from '../users/invite.repository.js';
 import { sessionRepository } from './session.repository.js';
+import { billingService } from '../billing/billing.service.js';
 import { toPublicUser } from '../users/user.service.js';
 import { Role } from '../users/user.types.js';
 import { CompanyStatus } from '../companies/company.types.js';
@@ -136,10 +137,24 @@ export const authService = {
       throw new ForbiddenError('This account has been deactivated');
     }
 
-    const company = await companyRepository.findById(user.companyId.toString());
-    if (!company || company.status !== CompanyStatus.ACTIVE) {
+    let company = await companyRepository.findById(user.companyId.toString());
+    if (!company) {
       throw new ForbiddenError('This company account is currently suspended');
     }
+
+    // Lazily escalates PAST_DUE -> SUSPENDED once the grace period has
+    // elapsed (billing/plan.config.ts, GRACE_PERIOD_DAYS) - same check as
+    // requireActiveSubscription, since login is the other place company
+    // status gets read for enforcement.
+    company = await billingService.escalateIfGracePeriodElapsed(company);
+
+    if (company.status === CompanyStatus.SUSPENDED) {
+      throw new ForbiddenError('This company account is currently suspended');
+    }
+    // PAST_DUE deliberately does NOT block login - a company mid-grace-
+    // period must still be able to sign in to see its own data and fix
+    // its payment method (see requireActiveSubscription, which blocks
+    // writes but not reads, for the same reasoning).
 
     const tokens = await issueTokenPair(user, meta);
     return { user: toPublicUser(user), tokens };

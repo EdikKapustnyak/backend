@@ -58,6 +58,17 @@ describe('GET /api/v1/companies/me', () => {
     expect(res.body.data.city).toBe('Stavanger');
     expect(res.body.data.businessType).toBeNull();
   });
+
+  it('defaults the configurable lookback/cache-TTL fields', async () => {
+    const ownerToken = await registerCompany('owner2b@cm.test', 'CM Co 2b');
+
+    const res = await request(app)
+      .get('/api/v1/companies/me')
+      .set('Authorization', `Bearer ${ownerToken}`);
+
+    expect(res.body.data.wasteAnalyticsDefaultLookbackDays).toBe(30);
+    expect(res.body.data.localEventsCacheTtlDays).toBe(7);
+  });
 });
 
 describe('PATCH /api/v1/companies/me', () => {
@@ -72,6 +83,35 @@ describe('PATCH /api/v1/companies/me', () => {
     expect(res.status, JSON.stringify(res.body)).toBe(200);
     expect(res.body.data.city).toBe('Oslo');
     expect(res.body.data.businessType).toBe('ресторан');
+  });
+
+  it('lets an owner update the waste-analytics lookback and local-events cache TTL', async () => {
+    const ownerToken = await registerCompany('owner3b@cm.test', 'CM Co 3b');
+
+    const res = await request(app)
+      .patch('/api/v1/companies/me')
+      .set('Authorization', `Bearer ${ownerToken}`)
+      .send({ wasteAnalyticsDefaultLookbackDays: 60, localEventsCacheTtlDays: 3 });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(res.body.data.wasteAnalyticsDefaultLookbackDays).toBe(60);
+    expect(res.body.data.localEventsCacheTtlDays).toBe(3);
+  });
+
+  it('rejects an out-of-range lookback/cache-TTL value', async () => {
+    const ownerToken = await registerCompany('owner3c@cm.test', 'CM Co 3c');
+
+    const tooLong = await request(app)
+      .patch('/api/v1/companies/me')
+      .set('Authorization', `Bearer ${ownerToken}`)
+      .send({ wasteAnalyticsDefaultLookbackDays: 400 });
+    expect(tooLong.status).toBe(422);
+
+    const tooLongCache = await request(app)
+      .patch('/api/v1/companies/me')
+      .set('Authorization', `Bearer ${ownerToken}`)
+      .send({ localEventsCacheTtlDays: 45 });
+    expect(tooLongCache.status).toBe(422);
   });
 
   it('rejects an update from an employee (RBAC)', async () => {

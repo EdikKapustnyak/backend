@@ -3,9 +3,10 @@ import { stripeClient } from '../../utils/stripeClient.js';
 import { logger } from '../../utils/logger.js';
 import { env } from '../../config/env.js';
 import { companyRepository } from '../companies/company.repository.js';
+import type { CompanyDocument } from '../companies/company.model.js';
 import { CompanyStatus, SubscriptionPlan } from '../companies/company.types.js';
 import { AppError, BadRequestError, ForbiddenError, NotFoundError } from '../../errors/index.js';
-import { PLAN_LIMITS, computeTotalPrice } from './plan.config.js';
+import { PLAN_LIMITS, GRACE_PERIOD_DAYS, computeTotalPrice } from './plan.config.js';
 import type { CheckoutSessionInput } from './billing.schema.js';
 import type { CheckoutSessionResult, PortalSessionResult } from './billing.types.js';
 
@@ -49,8 +50,9 @@ export const billingService = {
         name: company.name,
         metadata: { companyId },
       });
-      stripeCustomerId = customer.id;
-      await companyRepository.updateSubscriptionState(companyId, { stripeCustomerId });
+      const newCustomerId = customer.id;
+      await companyRepository.updateSubscriptionState(companyId, { stripeCustomerId: newCustomerId });
+      stripeCustomerId = newCustomerId;
     }
 
     const totalPrice = computeTotalPrice(input.plan, input.period);
@@ -194,6 +196,38 @@ export const billingService = {
       default:
         break;
     }
+  },
+
+  /**
+   * Lazily escalates PAST_DUE -> SUSPENDED once the grace period has
+   * elapsed. There's no cron/job scheduler anywhere in this codebase
+   * (TTL-indexed collections rely on MongoDB's own background sweep
+   * instead), so this follows the same "check lazily, right when the
+   * value actually gets used" shape rather than introducing one - called
+   * from requireActiveSubscription and authService.login, the two places
+   * that read company.status for enforcement. A company that stops
+   * making requests entirely (and never logs in again) never gets
+   * escalated - acceptable today since Stripe's own subscription
+   * cancellation (customer.subscription.deleted -> SUSPENDED, see
+   * handleWebhookEvent above) is the actual backstop; this just makes
+   * the transition happen sooner, driven by the company's own activity.
+   */
+  async escalateIfGracePeriodElapsed(company: CompanyDocument): Promise<CompanyDocument> {
+    if (company.status !== CompanyStatus.PAST_DUE || !company.pastDueSince) {
+      return company;
+    }
+
+    const graceDeadline = new Date(company.pastDueSince);
+    graceDeadline.setDate(graceDeadline.getDate() + GRACE_PERIOD_DAYS);
+
+    if (new Date() < graceDeadline) {
+      return company;
+    }
+
+    const updated = await companyRepository.updateSubscriptionState(company._id.toString(), {
+      status: CompanyStatus.SUSPENDED,
+    });
+    return updated ?? company;
   },
 
   /** Throws if `currentCount` is already at (or past) the plan's limit for `resource`. Called before creating a new warehouse/user - see warehouse.controller.ts / user.service.ts. */
