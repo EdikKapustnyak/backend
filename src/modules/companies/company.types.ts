@@ -8,6 +8,13 @@ export enum SubscriptionPlan {
 
 export enum CompanyStatus {
   ACTIVE = 'active',
+  /**
+   * A Stripe payment failed but the grace period (see billing/plan.config.ts)
+   * hasn't elapsed yet. Reads still work; writes are blocked by
+   * requireActiveSubscription until the payment method is fixed or the
+   * grace period runs out and this becomes SUSPENDED.
+   */
+  PAST_DUE = 'past_due',
   SUSPENDED = 'suspended',
 }
 
@@ -17,6 +24,14 @@ export interface CompanyDocumentShape {
   slug: string;
   subscriptionPlan: SubscriptionPlan;
   status: CompanyStatus;
+  /** Stripe Customer id (`cus_...`) - null until the company's first checkout. */
+  stripeCustomerId: string | null;
+  /** Stripe Subscription id (`sub_...`) - null until a subscription is actually created. */
+  stripeSubscriptionId: string | null;
+  /** End of the current billing period, mirrored from Stripe on every relevant webhook event. */
+  currentPeriodEnd: Date | null;
+  /** When the company first entered PAST_DUE - null while ACTIVE. Used to compute when the grace period elapses. */
+  pastDueSince: Date | null;
   /** Used by the local-events AI feature to search for relevant events. Required since registration. */
   city: string;
   /** Free text (e.g. "кофейня", "ресторан") - used to make AI recommendations relevant. */
@@ -35,6 +50,8 @@ export interface PublicCompany {
   slug: string;
   subscriptionPlan: SubscriptionPlan;
   status: CompanyStatus;
+  currentPeriodEnd: Date | null;
+  pastDueSince: Date | null;
   city: string;
   businessType: string | null;
   largeDiscrepancyAbsThreshold: number;

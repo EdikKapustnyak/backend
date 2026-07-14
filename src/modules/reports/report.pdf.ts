@@ -34,7 +34,9 @@ interface Column {
 /**
  * Draws a table starting at (x, startY), handling page breaks (re-drawing
  * the header row on each new page) and returning the y position after the
- * last row.
+ * last row. `cellColors[rowIndex][columnIndex]` optionally overrides that
+ * one cell's fill color (e.g. flagging a large discrepancy in red) -
+ * omitted entirely by callers that don't need per-cell highlighting.
  */
 function renderTable(
   doc: PDFKit.PDFDocument,
@@ -42,9 +44,11 @@ function renderTable(
   startY: number,
   columns: Column[],
   rows: string[][],
+  cellColors: Record<number, string>[] = [],
 ): number {
   const pageBottom = doc.page.height - doc.page.margins.bottom;
   const tableWidth = columns.reduce((sum, col) => sum + col.width, 0);
+  const DEFAULT_CELL_COLOR = '#111111';
 
   const drawHeader = (y: number): number => {
     doc.font('heading').fontSize(9).fillColor('#111111');
@@ -63,21 +67,24 @@ function renderTable(
   };
 
   let y = drawHeader(startY);
-  doc.font('body').fontSize(9).fillColor('#111111');
+  doc.font('body').fontSize(9).fillColor(DEFAULT_CELL_COLOR);
 
-  for (const row of rows) {
+  rows.forEach((row, rowIndex) => {
     if (y + ROW_HEIGHT > pageBottom) {
       doc.addPage();
       y = drawHeader(doc.page.margins.top);
-      doc.font('body').fontSize(9).fillColor('#111111');
+      doc.font('body').fontSize(9).fillColor(DEFAULT_CELL_COLOR);
     }
+    const rowColors = cellColors[rowIndex] ?? {};
     let cx = x;
     columns.forEach((col, i) => {
+      doc.fillColor(rowColors[i] ?? DEFAULT_CELL_COLOR);
       doc.text(row[i] ?? '', cx, y, { width: col.width, align: col.align ?? 'left' });
       cx += col.width;
     });
+    doc.fillColor(DEFAULT_CELL_COLOR);
     y += ROW_HEIGHT;
-  }
+  });
 
   return y;
 }
@@ -284,6 +291,116 @@ export function renderWriteOffsReportPdf(data: WriteOffsReportData): PDFKit.PDFD
       String(entry.totalQuantity),
     ]);
     renderTable(doc, PAGE_MARGIN, y, reasonColumns, reasonRows);
+  }
+
+  doc.end();
+  return doc;
+}
+
+// ---------------------------------------------------------------------------
+// Inventarizations report
+// ---------------------------------------------------------------------------
+
+export interface InventarizationsReportRow {
+  date: Date;
+  warehouseName: string;
+  itemsCount: number;
+  countedItemsCount: number;
+  largeDiscrepancyCount: number;
+  status: string;
+}
+
+export interface InventarizationsReportData {
+  companyName: string;
+  generatedAt: Date;
+  from: Date | null;
+  to: Date | null;
+  rows: InventarizationsReportRow[];
+  totalLargeDiscrepancies: number;
+  byWarehouse: Array<{ warehouseName: string; count: number; largeDiscrepancyCount: number }>;
+}
+
+export function renderInventarizationsReportPdf(
+  data: InventarizationsReportData,
+): PDFKit.PDFDocument {
+  const doc = createReportDocument();
+
+  doc.font('heading').fontSize(16).text(data.companyName, PAGE_MARGIN, PAGE_MARGIN);
+  doc.font('heading').fontSize(13).text('Отчёт по инвентаризациям', PAGE_MARGIN, PAGE_MARGIN + 22);
+
+  const period =
+    data.from || data.to
+      ? `Период: ${data.from ? formatDate(data.from) : '...'} — ${data.to ? formatDate(data.to) : '...'}`
+      : 'Период: весь';
+  doc
+    .font('body')
+    .fontSize(9)
+    .fillColor('#555555')
+    .text(period, PAGE_MARGIN, PAGE_MARGIN + 42)
+    .text(`Сформирован: ${formatDate(data.generatedAt)}`, PAGE_MARGIN, PAGE_MARGIN + 56);
+  doc.fillColor('#111111');
+
+  let y = PAGE_MARGIN + 84;
+
+  if (data.rows.length === 0) {
+    doc.font('body').fontSize(10).text('Нет инвентаризаций за выбранный период.', PAGE_MARGIN, y);
+    doc.end();
+    return doc;
+  }
+
+  const columns: Column[] = [
+    { header: 'Дата', width: 70 },
+    { header: 'Склад', width: 130 },
+    { header: 'Позиций', width: 60, align: 'right' },
+    { header: 'Подсчитано', width: 75, align: 'right' },
+    { header: 'Крупных расхожд.', width: 100, align: 'right' },
+    { header: 'Статус', width: 60 },
+  ];
+  const rows = data.rows.map((row) => [
+    formatDate(row.date),
+    row.warehouseName,
+    String(row.itemsCount),
+    String(row.countedItemsCount),
+    String(row.largeDiscrepancyCount),
+    row.status,
+  ]);
+
+  // Rows with at least one large discrepancy get their "Крупных расхожд."
+  // cell (column index 4) rendered in red by renderTable's optional
+  // per-cell color map - everything else uses the default black.
+  const cellColors: Record<number, string>[] = data.rows.map((row) => {
+    const colors: Record<number, string> = {};
+    if (row.largeDiscrepancyCount > 0) {
+      colors[4] = '#B00020';
+    }
+    return colors;
+  });
+
+  y = renderTable(doc, PAGE_MARGIN, y, columns, rows, cellColors);
+
+  y = ensureSpace(doc, y + 20, 40);
+  doc
+    .font('heading')
+    .fontSize(11)
+    .text(`Итого крупных расхождений: ${data.totalLargeDiscrepancies}`, PAGE_MARGIN, y);
+  y += 26;
+
+  if (data.byWarehouse.length > 0) {
+    y = ensureSpace(doc, y, 30);
+    doc.font('heading').fontSize(11).text('По складам', PAGE_MARGIN, y);
+    y += 20;
+
+    const warehouseColumns: Column[] = [
+      { header: 'Склад', width: 200 },
+      { header: 'Инвентаризаций', width: 110, align: 'right' },
+      { header: 'Крупных расхожд.', width: 100, align: 'right' },
+    ];
+    const warehouseRows = data.byWarehouse.map((entry) => [
+      entry.warehouseName,
+      String(entry.count),
+      String(entry.largeDiscrepancyCount),
+    ]);
+    renderTable(doc, PAGE_MARGIN, y, warehouseColumns, warehouseRows);
   }
 
   doc.end();

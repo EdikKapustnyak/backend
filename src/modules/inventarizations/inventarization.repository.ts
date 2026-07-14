@@ -29,7 +29,36 @@ interface ListInventarizationsFilter {
   status?: InventarizationStatus;
 }
 
+interface InventarizationReportFilter {
+  companyId: string;
+  from?: Date;
+  to?: Date;
+  warehouseId?: string;
+  status?: InventarizationStatus;
+}
+
+const REPORT_MAX_RECORDS = 2000;
+
 export const inventarizationRepository = {
+  /**
+   * Unpaginated (but capped) fetch for PDF report generation - not exposed
+   * directly via a paginated HTTP list endpoint. Same shape as
+   * purchaseRepository.findManyForReport / writeOffRepository.findManyForReport.
+   */
+  async findManyForReport(filter: InventarizationReportFilter): Promise<InventarizationDocument[]> {
+    const query: FilterQuery<InventarizationDocumentShape> = { companyId: filter.companyId };
+
+    if (filter.warehouseId) query.warehouseId = filter.warehouseId;
+    if (filter.status) query.status = filter.status;
+    if (filter.from || filter.to) {
+      query.createdAt = {};
+      if (filter.from) query.createdAt.$gte = filter.from;
+      if (filter.to) query.createdAt.$lte = filter.to;
+    }
+
+    return InventarizationModel.find(query).sort({ createdAt: 1 }).limit(REPORT_MAX_RECORDS).exec();
+  },
+
   async create(input: CreateInventarizationInput): Promise<InventarizationDocument> {
     return InventarizationModel.create({
       companyId: input.companyId,

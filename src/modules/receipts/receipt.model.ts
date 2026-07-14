@@ -1,5 +1,6 @@
 import { Schema, model, type HydratedDocument } from 'mongoose';
 import { ReceiptType, type ReceiptDocumentShape } from './receipt.types.js';
+import { tenantScopePlugin } from '../../utils/tenantScopePlugin.js';
 
 export type ReceiptDocument = HydratedDocument<ReceiptDocumentShape>;
 
@@ -67,5 +68,7 @@ receiptSchema.index({ companyId: 1, type: 1 });
 receiptSchema.index({ companyId: 1, category: 1 });
 receiptSchema.index({ companyId: 1, date: -1 });
 receiptSchema.index({ companyId: 1, isActive: 1 });
+
+receiptSchema.plugin(tenantScopePlugin);
 
 export const ReceiptModel = model<ReceiptDocumentShape>('Receipt', receiptSchema);

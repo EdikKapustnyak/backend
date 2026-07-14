@@ -8,6 +8,8 @@ export function toPublicCompany(company: CompanyDocument): PublicCompany {
     slug: company.slug,
     subscriptionPlan: company.subscriptionPlan,
     status: company.status,
+    currentPeriodEnd: company.currentPeriodEnd,
+    pastDueSince: company.pastDueSince,
     city: company.city,
     businessType: company.businessType,
     largeDiscrepancyAbsThreshold: company.largeDiscrepancyAbsThreshold,

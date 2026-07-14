@@ -35,7 +35,9 @@ src/
 ├── modules/
 │   ├── auth/               # register-company, login, refresh, logout, me,
 │   │                        # + multi-device session list/revoke (session.*)
-│   ├── users/               # tenant-scoped user management (invite, list)
+│   ├── users/               # tenant-scoped user management (invite via
+│   │                        # email token, list) + invite.* (pending-user
+│   │                        # token model, TTL-indexed like Session)
 │   ├── companies/            # company (tenant) model + repository
 │   ├── warehouses/           # tenant-scoped warehouse CRUD (soft delete)
 │   ├── products/             # tenant-scoped product catalog (soft delete)
@@ -46,24 +48,49 @@ src/
 │   ├── stock-movements/      # read-only audit ledger, written by the modules below
 │   ├── inventarizations/     # draft → completed/cancelled stock count; completion reconciles to fact
 │   ├── notifications/        # read-only + resolve; system-generated low-stock & discrepancy alerts
-│   ├── reports/              # PDF report generation (Purchases, Write-offs) - no model, reads other modules
+│   ├── reports/              # PDF report generation (Purchases, Write-offs,
+│   │                          # Inventarizations) - no model, reads other modules
 │   ├── receipts/             # receipt photo upload (R2 storage) - soft delete, presigned view URLs
 │   ├── companies/            # company (tenant) model/repository + GET/PATCH /companies/me (name, city, businessType)
 │   ├── analytics/            # waste analysis - deterministic Mongo aggregation + optional AI narrative
-│   └── local-events/         # AI + web-search event recommendations by city, cached 7 days per company
-├── middlewares/            # authenticate, requireRole, enforceTenant, validate,
-│                            # isValidId, upload (multer), errorHandler, notFoundHandler,
-│                            # rateLimiter, securityHeaders
+│   │                          # (narrative gated behind Business+, see requireFeature)
+│   ├── local-events/         # AI + web-search event recommendations by city, cached 7 days per company
+│   │                          # (entire endpoint gated behind Business+, see requireFeature)
+│   └── billing/              # Stripe checkout/portal/webhook + plan.config.ts (PLAN_LIMITS,
+│                              # pricing) - single source of truth for tier limits/feature
+│                              # gates, see ADR-0001 and the "Billing & subscriptions" section
+├── middlewares/            # authenticate, requireRole, requireActiveSubscription (blocks
+│                            # writes for past_due/suspended companies, reads always pass),
+│                            # requireFeature (plan-gated features, e.g. 'ai'), enforceTenant,
+│                            # validate, isValidId, upload (multer), errorHandler,
+│                            # notFoundHandler, rateLimiter, securityHeaders
 ├── errors/                 # AppError + typed subclasses
 ├── utils/                  # jwt, password hashing, pagination, objectId (Zod),
 │                            # htmlToPdf (Puppeteer engine, not wired to a route
-│                            # yet), htmlReportTemplate, escapeHtml,
-│                            # tokenHash (SHA-256, for refresh tokens - NOT
-│                            # bcrypt, see point 24 below), etc.
+│                            # yet), htmlReportTemplate, escapeHtml, mailer
+│                            # (Resend, optional - falls back to returning the
+│                            # invite link when unconfigured, see point 2),
+│                            # stripeClient (Stripe SDK wrapper, same throw-if-
+│                            # unconfigured shape as R2 - see point 26),
+│                            # tenantScopePlugin (structural multi-tenancy
+│                            # enforcement, see point 25 / Multi-tenancy
+│                            # section), tokenHash (SHA-256, for refresh +
+│                            # invite tokens - NOT bcrypt, see point 24 below), etc.
+├── openapi/                # Swagger/OpenAPI doc generation - registry.ts
+│                            # (shared registry + common schemas), responseSchemas.ts
+│                            # (Zod mirrors of every PublicX shape), paths/*.paths.ts
+│                            # (one file per module, reusing that module's real
+│                            # *.schema.ts as-is), generateDocument.ts, docsRouter.ts.
+│                            # See "API Documentation" section.
 └── types/                  # Express Request augmentation (req.auth)
 tests/
 ├── setup.ts               # in-memory MongoDB replica-set lifecycle for tests
-├── auth.test.ts            # auth flow + multi-tenant isolation + RBAC tests
+├── auth.test.ts            # auth flow + multi-tenant isolation + RBAC + accept-invite login-block tests
+├── invites.test.ts          # invite creation, mailer-unconfigured fallback link, accept (reuse/expiry/weak password)
+├── mailer.test.ts            # unit test: clear error when Resend isn't configured (unmocked)
+├── tenantScopePlugin.test.ts   # exercises the plugin directly against a real model - query/save/aggregate hooks + skipTenantScope
+├── billing.test.ts              # checkout/portal (mocked Stripe SDK), webhook event->Company-state mapping, requireActiveSubscription, resource limits
+├── openapi.test.ts                # generated document structure (one path per module, security schemes) + GET /docs and /docs/openapi.json respond
 ├── warehouses.test.ts       # warehouse CRUD + tenant isolation + RBAC + pagination
 ├── products.test.ts         # product CRUD + unique SKU/barcode + search + RBAC
 ├── inventory.test.ts         # stock create/adjust + FK tenant checks + RBAC
@@ -73,7 +100,7 @@ tests/
 ├── stock-movements.test.ts       # movement generation from all sources + tenant isolation + rollback
 ├── inventarizations.test.ts       # auto-populate/count/complete workflow + reconciliation + rollback
 ├── notifications.test.ts           # low-stock open/dedupe/auto-resolve + discrepancy alerts + RBAC
-├── reports.test.ts                  # PDF generation, filters, empty datasets, RBAC
+├── reports.test.ts                  # PDF generation (Purchases/Write-offs/Inventarizations), filters, empty datasets, RBAC
 ├── htmlToPdf.test.ts                 # escapeHtml + wrapReportHtml unit tests (Puppeteer engine)
 ├── receipts.test.ts                   # upload/list/update/soft-delete + RBAC + tenant isolation (objectStorage mocked)
 ├── objectStorage.test.ts              # unit test: clear error when R2 isn't configured (unmocked)
@@ -98,8 +125,24 @@ Each future domain module (`notifications`) should follow the same shape as
   signed token. This is what prevents tenant spoofing.
 - `enforceTenant` middleware is available as a second line of defense for
   nested routes that also carry a `:companyId` param.
-- Every Mongoose query that touches tenant data must include `companyId` (see
-  `user.repository.ts` for the pattern to replicate in future modules).
+- **Structural enforcement, not just convention**: every tenant-scoped
+  schema (13 of them — everything with a `companyId` field except `Company`
+  itself and `Session`, which is scoped by `userId` instead) runs
+  `schema.plugin(tenantScopePlugin)` (`utils/tenantScopePlugin.ts`). It
+  hooks `find`/`findOne`/`findOneAndUpdate`/`updateOne`/`updateMany`/
+  `deleteOne`/`deleteMany`/`countDocuments` (plus `save` and `aggregate`)
+  and **throws a 500 if the query has no `companyId` in its filter**,
+  instead of silently running unscoped. A query author who genuinely needs
+  an untenanted lookup (global email uniqueness, the refresh-token flow,
+  invite-token lookups) has to say so explicitly with
+  `.setOptions({ skipTenantScope: true })` — see `user.repository.ts` /
+  `invite.repository.ts` for the 8 current cases, all pre-existing and
+  already audited, not new exceptions introduced by the plugin. It does
+  **not** verify the companyId is *correct*, and does **not** auto-inject
+  one (no request-scoped context/AsyncLocalStorage in this codebase) —
+  see the plugin's own doc comment for the full, honest list of what it
+  does and doesn't catch. `tests/tenantScopePlugin.test.ts` exercises it
+  directly against a real model.
 
 ## RBAC
 
@@ -108,22 +151,66 @@ Roles (`src/modules/users/user.types.ts`): `owner > admin > manager > employee`.
 (created via `register-company`) is always `owner` and cannot be reassigned
 through the invite endpoint.
 
+## Billing & subscriptions
+
+Implements ADR-0001 (`docs/adr/0001-payments-and-subscriptions.md`) - see
+that file for the reasoning; this section is the "what actually runs"
+summary.
+
+- **Provider: Stripe.** `utils/stripeClient.ts` wraps the SDK, following
+  the same throw-at-point-of-use shape as `objectStorage.ts`/R2 - there's
+  no fallback for an unconfigured Stripe the way there is for `mailer.ts`.
+- **Checkout**: `POST /billing/checkout` creates (or reuses) a Stripe
+  Customer for the company, then a Checkout Session priced inline via
+  Stripe's `price_data` (`billing/plan.config.ts` computes the total from
+  `plan`+`period`) - no per-plan-per-period Price objects to keep in sync
+  in the Stripe Dashboard. Basic isn't sold this way; it's the free
+  default every company starts on.
+- **Webhook**: `POST /billing/webhook` is the only unauthenticated,
+  raw-body route in the app - mounted directly in `app.ts`, *before* the
+  global `express.json()`, because Stripe's signature is computed over
+  the exact request bytes. It updates `Company.status`/`subscriptionPlan`/
+  `stripeSubscriptionId`/`currentPeriodEnd` in response to
+  `checkout.session.completed`, `invoice.payment_failed`,
+  `invoice.payment_succeeded`, and `customer.subscription.deleted`.
+- **Grace period**: a failed payment sets `CompanyStatus.PAST_DUE` (not
+  straight to `suspended`) + `pastDueSince`. `requireActiveSubscription`
+  (wired into every router except `/auth` and `/billing` itself) blocks
+  writes for `past_due`/`suspended` companies but always allows reads -
+  a company can still see its data and fix its payment method, just not
+  create more data it isn't paying for. There's no scheduled job that
+  escalates `past_due` → `suspended` after N days yet - see ADR-0001,
+  Action Items.
+- **Tier limits**: `billing/plan.config.ts` (`PLAN_LIMITS`) is the single
+  source of truth - `maxWarehouses`/`maxUsers` (enforced in
+  `warehouse.controller.ts` / `user.service.ts` via
+  `billingService.assertResourceLimit`) and `aiFeatures` (enforced by the
+  `requireFeature('ai')` middleware on `GET /analytics/waste/narrative`
+  and `GET /local-events` - **not** on the free, deterministic
+  `GET /analytics/waste`). The specific numbers are illustrative, from the
+  ADR, not a final business decision - change them in one place and every
+  enforcement point picks it up.
+
 ## API (v1, prefix `/api/v1`)
 
 | Method | Path | Auth | Description |
 |---|---|---|---|
 | POST | `/auth/register-company` | public | Creates a company (tenant) + its OWNER user |
-| POST | `/auth/login` | public | Returns access token + sets refresh cookie |
+| POST | `/auth/login` | public | Returns access token + sets refresh cookie. Rejected (401, same generic message as wrong password) if the account hasn't accepted its invite yet |
+| POST | `/auth/accept-invite` | public (requires a valid invite token) | Sets the invited user's real password, deletes the token, logs them in (same response shape as login) |
 | POST | `/auth/refresh` | refresh cookie | Rotates tokens |
 | POST | `/auth/logout` | access token | Ends only the current device's session |
 | GET | `/auth/me` | access token | Current user |
 | GET | `/auth/sessions` | access token | List every active session (device/browser) for the caller, `isCurrent` flag on the one making the request |
 | DELETE | `/auth/sessions/:id` | access token | Revoke one specific session ("log out that device") |
 | DELETE | `/auth/sessions` | access token | Revoke every session, including the current one ("log out everywhere") |
-| GET | `/users` | access token | List users in the caller's company |
-| POST | `/users` | access token, `owner`/`admin` | Invite a new user into the caller's company |
+| GET | `/users` | access token | List users in the caller's company. `passwordSet: false` on the response means the invite hasn't been accepted yet |
+| POST | `/users` | access token, `owner`/`admin` | Creates a pending user (no password in the request) and emails them an accept-invite link. If Resend isn't configured or the send fails, the link is returned as `data.inviteLink` instead so the owner/admin can share it manually. Rejected (403) at the plan's user limit - see ADR-0001 / `billing/plan.config.ts` |
+| POST | `/billing/checkout` | access token, `owner`/`admin` | Creates a Stripe Checkout Session for `{ plan: 'business' \| 'enterprise', period: 1\|3\|6\|12 }` (Basic isn't sold - it's the free default), returns `{ checkoutUrl }` to redirect to |
+| POST | `/billing/portal` | access token, `owner`/`admin` | Creates a Stripe Customer Portal session (update card, cancel, view invoices), returns `{ portalUrl }`. 400 if the company has no Stripe customer yet (hasn't checked out) |
+| POST | `/billing/webhook` | **none** (Stripe signature instead) | Applies `checkout.session.completed` / `invoice.payment_failed` / `invoice.payment_succeeded` / `customer.subscription.deleted` to the local `Company` mirror. Mounted outside the normal router tree with a raw body - see `app.ts` |
 | GET | `/warehouses` | access token | Paginated list, supports `?page&perPage&search&isActive` |
-| POST | `/warehouses` | access token, `owner`/`admin`/`manager` | Create a warehouse |
+| POST | `/warehouses` | access token, `owner`/`admin`/`manager` | Create a warehouse. Rejected (403) at the plan's warehouse limit - see ADR-0001 / `billing/plan.config.ts` |
 | GET | `/warehouses/:id` | access token | Get one warehouse (tenant-scoped, 404 if not yours) |
 | PATCH | `/warehouses/:id` | access token, `owner`/`admin`/`manager` | Update name/location |
 | DELETE | `/warehouses/:id` | access token, `owner`/`admin` | Soft delete (sets `isActive: false`) |
@@ -171,10 +258,12 @@ through the invite endpoint.
 | GET | `/companies/me` | access token | Own company profile (name, slug, city, businessType, subscriptionPlan, status) |
 | PATCH | `/companies/me` | access token, `owner`/`admin` | Update name/city/businessType |
 | GET | `/analytics/waste` | access token | Deterministic waste aggregation, `?from&to` (default: last 30 days) - by product, by reason, waste ratio vs. purchases |
-| GET | `/analytics/waste/narrative` | access token | Same numbers plus an AI-written analysis + recommendations (calls the Anthropic API) |
-| GET | `/local-events` | access token | AI + web search: events in the company's city that could drive foot traffic. `?refresh=true` bypasses the 7-day cache. Requires `city` set via `PATCH /companies/me` first (400 otherwise) |
+| GET | `/analytics/waste/narrative` | access token, Business+ plan | Same numbers plus an AI-written analysis + recommendations (calls the Anthropic API). 403 on the Basic plan - see requireFeature('ai') |
+| GET | `/local-events` | access token, Business+ plan | AI + web search: events in the company's city that could drive foot traffic. `?refresh=true` bypasses the 7-day cache. Requires `city` set via `PATCH /companies/me` first (400 otherwise). 403 on the Basic plan - see requireFeature('ai') |
 | GET | `/reports/purchases/pdf` | access token | Streams a PDF, `?from&to&supplierId&warehouseId&status` — table + totals by supplier |
 | GET | `/reports/write-offs/pdf` | access token | Streams a PDF, `?from&to&productId&warehouseId&reason&status` — table + totals by reason |
+| GET | `/reports/inventarizations/pdf` | access token | Streams a PDF, `?from&to&warehouseId&status` — one row per inventarization (items/counted/large-discrepancy counts), large-discrepancy cells highlighted in red, totals by warehouse. "Large" uses the same company thresholds (`largeDiscrepancyAbsThreshold`/`Percent`) as the `inventarization_discrepancy` notification |
+| GET | `/receipts` | access token | Paginated list, `?page&perPage&type&category&from&to` |
 
 Response envelope follows `Claude.md`:
 ```json
@@ -182,19 +271,54 @@ Response envelope follows `Claude.md`:
 { "success": false, "error": { "code": "", "message": "" } }
 ```
 
+## API Documentation (Swagger / OpenAPI)
+
+`GET /docs` — interactive Swagger UI. `GET /docs/openapi.json` — the raw
+OpenAPI 3.0 document. Both live outside `/api/v1` (they're tooling, not a
+versioned API resource).
+
+- **On by default everywhere except production** (`apiDocsEnabled` in
+  `config/env.ts`) — set `ENABLE_API_DOCS=true` to force it on in prod,
+  or `=false` to force it off anywhere. The docs describe every request/
+  response shape in detail; no secrets are exposed, but it's more
+  API-surface mapping than should be world-readable by default on a live
+  deployment.
+- **Built with `@asteasolutions/zod-to-openapi`**, on top of the
+  project's existing Zod schemas — every `*.schema.ts` file is reused
+  **as-is** for request validation in the docs (none of them were
+  modified to add `.openapi()` calls); only response shapes needed new
+  Zod mirrors of the `PublicX` types, in `src/openapi/responseSchemas.ts`.
+  One source of truth for validation, not two schemas that could drift.
+- **`src/openapi/registry.ts`** — the shared `OpenAPIRegistry`, the bearer
+  JWT security scheme, and the common response shapes (`ErrorResponse`,
+  `Pagination`, the `{items, pagination}` list wrapper, the
+  `{success, data, message}` envelope) every endpoint reuses.
+- **`src/openapi/paths/*.paths.ts`** — one file per module, each
+  registering that module's actual routes (method, path, role/plan
+  restrictions in the description, request schema, response schema).
+  `src/openapi/generateDocument.ts` imports all of them for their
+  registration side effects, then builds the final document.
+- Endpoints not meaningfully documentable as a request/response pair are
+  deliberately excluded: `POST /billing/webhook` (not callable by an API
+  client — Stripe-Signature verification instead of a JWT, and not
+  mounted under `/api/v1` the normal way, see `app.ts`).
+
 ## Assumptions made (please confirm / correct)
 
 1. **Email is globally unique** across the whole platform (one email = one
    account in one company), not just unique per company — simplifies login
    (no need to also submit a company slug/ID). Flag if you want per-company
    scoping instead (e.g. same email usable at two different client companies).
-2. **Invite flow issues the password directly** via `POST /users` rather than
-   sending an email invite link with a signup token — simplest thing that
-   works for now; swap for an email-token flow later if needed.
-3. Refresh tokens are rotated and a single **hashed refresh token per user**
-   is stored (not a full multi-device session table) — sufficient for v1,
-   would need a `sessions` collection for "log out of all devices" /
-   multi-device session listing later.
+2. **Invite flow issues a single-use, 7-day email-token link** via
+   `POST /users` (no password in that request) — the invited person sets
+   their own password by visiting `FRONTEND_URL/accept-invite?token=...`.
+   Until then the account exists but can't log in (`passwordSet: false`).
+   If Resend isn't configured (or a send fails), the link comes back in the
+   API response instead so it can be shared manually — see `utils/mailer.ts`.
+3. Refresh tokens are rotated and stored **per-session** in a dedicated
+   `Session` collection (one row per login/device, TTL-indexed), not a
+   single hashed token on `User` — this is what backs `GET/DELETE
+   /auth/sessions` ("log out of all devices").
 4. Password policy: min 8 chars, upper+lower+digit. Adjust if you have a
    different requirement.
 5. **Warehouse deletion is soft** (`DELETE` sets `isActive: false`, record
@@ -216,9 +340,10 @@ Response envelope follows `Claude.md`:
    There's no free-form "set quantity to X" endpoint yet by design — only
    audited deltas — since inventory changes should have provenance (which
    the future Stock Movements log will capture).
-8. **Low-stock detection is not implemented yet** — `Product.minStockLevel`
-   is stored but nothing currently compares it against `Inventory.quantity`;
-   that comparison belongs to the future Notifications module.
+8. **Low-stock detection is implemented** — `Notification` documents of
+   type `low_stock` open/dedupe/auto-resolve by comparing
+   `Inventory.quantity` against `Product.minStockLevel` whenever stock
+   changes (purchases, write-offs, inventarization, manual adjustment).
 10. **Supplier `name` is unique per company** (same soft-delete pattern as
     Warehouses/Products) — two suppliers with an identical name in the same
     company are rejected (409); the same name is fine across companies.
@@ -346,17 +471,24 @@ Response envelope follows `Claude.md`:
     project, keep `assets/` as a sibling of `src/`/`dist/`, or update the
     relative path in `report.pdf.ts`.**
     Reports have no persistence of their own — `GET /reports/*/pdf` queries
-    `Purchase`/`WriteOff` directly (capped at 2,000 records per report,
-    `REPORT_MAX_RECORDS` in each repository) and resolves supplier/
-    warehouse/product **names** via one unpaginated-but-capped fetch each
-    (`findAllInCompany`, capped at 5,000), rather than one query per row.
-    Both reports include every status by default (draft/completed/
-    cancelled, etc.) with the status shown per row — filter with `?status=`
-    if you only want, say, completed purchases. Testing binary PDF output
-    with Supertest doesn't verify the rendered content (would need a PDF-
-    parsing library) — `tests/reports.test.ts` checks the response is a
-    structurally valid PDF (`%PDF` magic bytes, correct `Content-Type`) for
-    both populated and empty datasets, not what text ends up on the page.
+    `Purchase`/`WriteOff`/`Inventarization` directly (capped at 2,000 records
+    per report, `REPORT_MAX_RECORDS` in each repository) and resolves
+    supplier/warehouse/product **names** via one unpaginated-but-capped
+    fetch each (`findAllInCompany`, capped at 5,000), rather than one query
+    per row. All three reports include every status by default (draft/
+    completed/cancelled, etc.) with the status shown per row — filter with
+    `?status=` if you only want, say, completed purchases. The
+    Inventarizations report additionally recomputes "large discrepancy" per
+    item straight from `isLargeDiscrepancy` (exported from
+    `notification.service.ts`) against the company's own thresholds, rather
+    than reading stored `Notification` documents — it stays accurate even
+    if a notification was later resolved or deleted, at the cost of one
+    more reason `reports` now depends on `notifications`. Testing binary
+    PDF output with Supertest doesn't verify the rendered content (would
+    need a PDF-parsing library) — `tests/reports.test.ts` checks the
+    response is a structurally valid PDF (`%PDF` magic bytes, correct
+    `Content-Type`) for both populated and empty datasets, not what text or
+    colors end up on the page.
 18. **A second PDF engine (Puppeteer/headless Chrome) is now in the
     codebase but not wired to any route yet** — `src/utils/htmlToPdf.ts`
     (`renderHtmlToPdf`, `closeHtmlToPdfEngine`), plus two small helpers:
@@ -566,21 +698,45 @@ Response envelope follows `Claude.md`:
       anywhere in this codebase later, use `tokenHash.ts`, not
       `password.ts` - the same truncation trap applies to anything longer
       than 72 bytes.
+25. **Tenant isolation is now structurally enforced, not just a
+    convention** — see the Multi-tenancy section above for what
+    `tenantScopePlugin.ts` actually does. Two design choices worth
+    flagging explicitly:
+    - It **validates, it doesn't auto-inject**. A query missing companyId
+      throws instead of silently running unscoped - it does not pull a
+      companyId from anywhere on your behalf. Auto-injection would need
+      request-scoped context (Node's `AsyncLocalStorage`, set in
+      `authenticate`), which this codebase doesn't have. That's a
+      possible future upgrade if "explicit is safer" stops being the
+      right tradeoff, not something already decided against.
+    - The **8 existing untenanted queries** (global email lookups, the
+      refresh-token flow, invite-token lookups) were audited one by one
+      before the plugin went in and marked with `.setOptions({
+      skipTenantScope: true })` - they're the same 8 exceptions that were
+      already commented as deliberate before this plugin existed, not new
+      holes opened to make the plugin fit. An unmarked query is always
+      treated as a bug.
 
 ## Not yet implemented (next stages, waiting for your go-ahead)
 
 - OCR/auto-extraction for receipt photos (amount/date from the image).
 - Direct-to-R2 presigned upload (skip routing file bytes through the API)
   if upload volume ever warrants it.
-- Email delivery for invites (currently the invite issues a password
-  directly - see point 12 below).
-- Inventarization PDF report (only Purchases and Write-offs exist so far).
 - Wiring the Puppeteer engine (see point 18) up to an actual report.
 - Making the local-events cache duration (7 days) and waste-analytics
   default lookback (30 days) configurable per company.
 - A "sales/revenue analysis" AI feature analogous to the waste one, once
   there's a sales data source to analyze (there isn't one yet - this
   project tracks purchases/stock/write-offs, not point-of-sale revenue).
+- Payments/subscriptions core flow is implemented (see "Billing &
+  subscriptions" section, ADR-0001) - what's still missing from that ADR:
+  a scheduled job to escalate `past_due` → `suspended` after the grace
+  period elapses (checked lazily today, only at request time, so a
+  company that stops making requests entirely never gets escalated);
+  an admin-facing manual override (comp a plan, extend a grace period);
+  proration handling for mid-cycle plan changes (Stripe's Customer Portal
+  handles cancel/update-card today, but not an in-app upgrade/downgrade
+  flow).
 
 ## Running MongoDB locally (replica set required for transactions)
 

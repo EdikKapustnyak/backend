@@ -22,15 +22,18 @@ async function registerCompany(email: string, companyName: string): Promise<Comp
 }
 
 async function inviteEmployee(ownerToken: string, email: string): Promise<string> {
-  await request(app)
+  const invite = await request(app)
     .post('/api/v1/users')
     .set('Authorization', `Bearer ${ownerToken}`)
-    .send({ name: 'Employee', email, password: strongPassword, role: 'employee' });
+    .send({ name: 'Employee', email, role: 'employee' });
 
-  const login = await request(app)
-    .post('/api/v1/auth/login')
-    .send({ email, password: strongPassword });
-  return login.body.data.accessToken as string;
+  // Mailer isn't configured in the test environment (see tests/setup.ts),
+  // so the invite link comes back in the response instead of being emailed.
+  const token = new URL(invite.body.data.inviteLink as string).searchParams.get('token');
+  const accept = await request(app)
+    .post('/api/v1/auth/accept-invite')
+    .send({ token, password: strongPassword });
+  return accept.body.data.accessToken as string;
 }
 
 async function createProduct(token: string, sku: string): Promise<string> {

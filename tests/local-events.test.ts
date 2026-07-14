@@ -2,6 +2,8 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import request from 'supertest';
 import { createApp } from '../src/app.js';
 import { anthropicClient } from '../src/utils/anthropicClient.js';
+import { CompanyModel } from '../src/modules/companies/company.model.js';
+import { SubscriptionPlan } from '../src/modules/companies/company.types.js';
 
 const app = createApp();
 const strongPassword = 'Sup3rSecret!';
@@ -37,19 +39,34 @@ async function registerCompany(
   const res = await request(app)
     .post('/api/v1/auth/register-company')
     .send({ companyName, ownerName: 'Owner', email, password: strongPassword, city: 'Stavanger', ...extra });
-  return res.body.data.accessToken as string;
+  const token = res.body.data.accessToken as string;
+
+  // local-events is gated behind Business+ (see requireFeature('ai')) -
+  // Basic is the default plan every test company starts on, but every
+  // test in this file needs the AI feature itself, not the gate around
+  // it, so upgrade once here rather than at each of the 6 call sites.
+  const companyId = res.body.data.user.companyId as string;
+  await CompanyModel.updateOne(
+    { _id: companyId },
+    { $set: { subscriptionPlan: SubscriptionPlan.BUSINESS } },
+  ).exec();
+
+  return token;
 }
 
 async function inviteEmployee(ownerToken: string, email: string): Promise<string> {
-  await request(app)
+  const invite = await request(app)
     .post('/api/v1/users')
     .set('Authorization', `Bearer ${ownerToken}`)
-    .send({ name: 'Employee', email, password: strongPassword, role: 'employee' });
+    .send({ name: 'Employee', email, role: 'employee' });
 
-  const login = await request(app)
-    .post('/api/v1/auth/login')
-    .send({ email, password: strongPassword });
-  return login.body.data.accessToken as string;
+  // Mailer isn't configured in the test environment (see tests/setup.ts),
+  // so the invite link comes back in the response instead of being emailed.
+  const token = new URL(invite.body.data.inviteLink as string).searchParams.get('token');
+  const accept = await request(app)
+    .post('/api/v1/auth/accept-invite')
+    .send({ token, password: strongPassword });
+  return accept.body.data.accessToken as string;
 }
 
 describe('GET /api/v1/local-events', () => {
@@ -129,5 +146,26 @@ describe('GET /api/v1/local-events', () => {
     // even though both share the same city.
     expect(resB.body.data.fromCache).toBe(false);
     expect(askClaudeForJsonSpy).toHaveBeenCalledTimes(2);
+  });
+
+  it('rejects a Basic-plan company with 403 (local events require Business+)', async () => {
+    // Deliberately not using the shared registerCompany() helper above -
+    // it always upgrades to Business, but this test needs the untouched
+    // default plan to exercise the gate itself.
+    const res1 = await request(app).post('/api/v1/auth/register-company').send({
+      companyName: 'LE Co Basic',
+      ownerName: 'Owner',
+      email: 'ownerbasic@le.test',
+      password: strongPassword,
+      city: 'Stavanger',
+    });
+    const token = res1.body.data.accessToken as string;
+
+    const res = await request(app)
+      .get('/api/v1/local-events')
+      .set('Authorization', `Bearer ${token}`);
+
+    expect(res.status).toBe(403);
+    expect(askClaudeForJsonSpy).not.toHaveBeenCalled();
   });
 });

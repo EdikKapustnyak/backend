@@ -4,6 +4,7 @@ import {
   StockMovementType,
   type StockMovementDocumentShape,
 } from './stock-movement.types.js';
+import { tenantScopePlugin } from '../../utils/tenantScopePlugin.js';
 
 export type StockMovementDocument = HydratedDocument<StockMovementDocumentShape>;
 
@@ -76,6 +77,8 @@ stockMovementSchema.index({ companyId: 1, productId: 1 });
 stockMovementSchema.index({ companyId: 1, warehouseId: 1 });
 stockMovementSchema.index({ companyId: 1, type: 1 });
 stockMovementSchema.index({ companyId: 1, referenceType: 1, referenceId: 1 });
+
+stockMovementSchema.plugin(tenantScopePlugin);
 
 export const StockMovementModel = model<StockMovementDocumentShape>(
   'StockMovement',

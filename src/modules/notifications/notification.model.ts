@@ -4,6 +4,7 @@ import {
   NotificationType,
   type NotificationDocumentShape,
 } from './notification.types.js';
+import { tenantScopePlugin } from '../../utils/tenantScopePlugin.js';
 
 export type NotificationDocument = HydratedDocument<NotificationDocumentShape>;
 
@@ -81,6 +82,8 @@ notificationSchema.index(
     },
   },
 );
+
+notificationSchema.plugin(tenantScopePlugin);
 
 export const NotificationModel = model<NotificationDocumentShape>(
   'Notification',

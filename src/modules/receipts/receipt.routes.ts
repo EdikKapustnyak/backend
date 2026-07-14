@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import * as receiptController from './receipt.controller.js';
 import { authenticate } from '../../middlewares/authenticate.js';
+import { requireActiveSubscription } from '../../middlewares/requireActiveSubscription.js';
 import { requireRole } from '../../middlewares/requireRole.js';
 import { validate } from '../../middlewares/validate.js';
 import { isValidId } from '../../middlewares/isValidId.js';
@@ -17,6 +18,7 @@ export const receiptRouter = Router();
 // companyId for every operation below is always derived from the verified
 // access token (see receipt.controller.ts), never from the client.
 receiptRouter.use(authenticate);
+receiptRouter.use(requireActiveSubscription);
 
 receiptRouter.get(
   '/',

@@ -4,6 +4,7 @@ import {
   type InventarizationDocumentShape,
   type InventarizationItemShape,
 } from './inventarization.types.js';
+import { tenantScopePlugin } from '../../utils/tenantScopePlugin.js';
 
 export type InventarizationDocument = HydratedDocument<InventarizationDocumentShape>;
 
@@ -86,6 +87,8 @@ const inventarizationSchema = new Schema<InventarizationDocumentShape>(
 
 inventarizationSchema.index({ companyId: 1, warehouseId: 1 });
 inventarizationSchema.index({ companyId: 1, status: 1 });
+
+inventarizationSchema.plugin(tenantScopePlugin);
 
 export const InventarizationModel = model<InventarizationDocumentShape>(
   'Inventarization',

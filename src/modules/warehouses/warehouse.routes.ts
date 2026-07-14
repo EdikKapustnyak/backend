@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import * as warehouseController from './warehouse.controller.js';
 import { authenticate } from '../../middlewares/authenticate.js';
+import { requireActiveSubscription } from '../../middlewares/requireActiveSubscription.js';
 import { requireRole } from '../../middlewares/requireRole.js';
 import { validate } from '../../middlewares/validate.js';
 import { isValidId } from '../../middlewares/isValidId.js';
@@ -12,6 +13,7 @@ export const warehouseRouter = Router();
 // companyId for every operation below is always derived from the verified
 // access token (see warehouse.controller.ts), never from the client.
 warehouseRouter.use(authenticate);
+warehouseRouter.use(requireActiveSubscription);
 
 warehouseRouter.get('/', validate({ query: listWarehousesQuerySchema }), warehouseController.listWarehouses);
 

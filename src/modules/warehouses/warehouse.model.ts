@@ -1,5 +1,6 @@
 import { Schema, model, type HydratedDocument } from 'mongoose';
 import type { WarehouseDocumentShape } from './warehouse.types.js';
+import { tenantScopePlugin } from '../../utils/tenantScopePlugin.js';
 
 export type WarehouseDocument = HydratedDocument<WarehouseDocumentShape>;
 
@@ -36,5 +37,7 @@ const warehouseSchema = new Schema<WarehouseDocumentShape>(
 warehouseSchema.index({ companyId: 1, name: 1 }, { unique: true });
 // Supports the common "list active warehouses for my company" query.
 warehouseSchema.index({ companyId: 1, isActive: 1 });
+
+warehouseSchema.plugin(tenantScopePlugin);
 
 export const WarehouseModel = model<WarehouseDocumentShape>('Warehouse', warehouseSchema);

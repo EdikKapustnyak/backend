@@ -1,5 +1,6 @@
 import { Schema, model, type HydratedDocument } from 'mongoose';
 import type { InventoryDocumentShape } from './inventory.types.js';
+import { tenantScopePlugin } from '../../utils/tenantScopePlugin.js';
 
 export type InventoryDocument = HydratedDocument<InventoryDocumentShape>;
 
@@ -43,5 +44,7 @@ const inventorySchema = new Schema<InventoryDocumentShape>(
 inventorySchema.index({ companyId: 1, productId: 1, warehouseId: 1 }, { unique: true });
 inventorySchema.index({ companyId: 1, warehouseId: 1 });
 inventorySchema.index({ companyId: 1, productId: 1 });
+
+inventorySchema.plugin(tenantScopePlugin);
 
 export const InventoryModel = model<InventoryDocumentShape>('Inventory', inventorySchema);

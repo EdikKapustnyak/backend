@@ -1,5 +1,6 @@
 import { Schema, model, type HydratedDocument } from 'mongoose';
 import type { ProductDocumentShape } from './product.types.js';
+import { tenantScopePlugin } from '../../utils/tenantScopePlugin.js';
 
 export type ProductDocument = HydratedDocument<ProductDocumentShape>;
 
@@ -90,5 +91,7 @@ productSchema.index(
 );
 productSchema.index({ companyId: 1, isActive: 1 });
 productSchema.index({ companyId: 1, category: 1 });
+
+productSchema.plugin(tenantScopePlugin);
 
 export const ProductModel = model<ProductDocumentShape>('Product', productSchema);

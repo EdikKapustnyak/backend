@@ -22,6 +22,10 @@ process.env.R2_ACCESS_KEY_ID = '';
 process.env.R2_SECRET_ACCESS_KEY = '';
 process.env.R2_BUCKET_NAME = '';
 process.env.ANTHROPIC_API_KEY = '';
+process.env.RESEND_API_KEY = '';
+process.env.MAIL_FROM = '';
+process.env.STRIPE_SECRET_KEY = '';
+process.env.STRIPE_WEBHOOK_SECRET = '';
 
 import { beforeAll, afterAll, afterEach } from 'vitest';
 import mongoose from 'mongoose';

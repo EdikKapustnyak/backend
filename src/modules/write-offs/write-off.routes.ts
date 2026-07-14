@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import * as writeOffController from './write-off.controller.js';
 import { authenticate } from '../../middlewares/authenticate.js';
+import { requireActiveSubscription } from '../../middlewares/requireActiveSubscription.js';
 import { requireRole } from '../../middlewares/requireRole.js';
 import { validate } from '../../middlewares/validate.js';
 import { isValidId } from '../../middlewares/isValidId.js';
@@ -12,6 +13,7 @@ export const writeOffRouter = Router();
 // companyId for every operation below is always derived from the verified
 // access token (see write-off.controller.ts), never from the client.
 writeOffRouter.use(authenticate);
+writeOffRouter.use(requireActiveSubscription);
 
 writeOffRouter.get(
   '/',

@@ -1,4 +1,16 @@
-import { createHash, timingSafeEqual } from 'node:crypto';
+import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
+
+/**
+ * Generates a high-entropy, URL-safe opaque token (hex-encoded). Used for
+ * anything that needs an unguessable secret handed to the client and later
+ * verified server-side by hashing-and-comparing (invite links today;
+ * password-reset links would follow the same shape later) - never a JWT,
+ * since these tokens carry no claims of their own, just identity via
+ * lookup.
+ */
+export function generateOpaqueToken(bytes = 32): string {
+  return randomBytes(bytes).toString('hex');
+}
 
 /**
  * Hashes an opaque, high-entropy token (refresh token JWTs) for storage and

@@ -1,5 +1,6 @@
 import { Schema, model, type HydratedDocument } from 'mongoose';
 import type { SupplierDocumentShape } from './supplier.types.js';
+import { tenantScopePlugin } from '../../utils/tenantScopePlugin.js';
 
 export type SupplierDocument = HydratedDocument<SupplierDocumentShape>;
 
@@ -60,5 +61,7 @@ const supplierSchema = new Schema<SupplierDocumentShape>(
 // A company cannot have two suppliers with the same name.
 supplierSchema.index({ companyId: 1, name: 1 }, { unique: true });
 supplierSchema.index({ companyId: 1, isActive: 1 });
+
+supplierSchema.plugin(tenantScopePlugin);
 
 export const SupplierModel = model<SupplierDocumentShape>('Supplier', supplierSchema);

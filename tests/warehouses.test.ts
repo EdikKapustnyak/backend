@@ -1,6 +1,8 @@
 import { describe, it, expect } from 'vitest';
 import request from 'supertest';
 import { createApp } from '../src/app.js';
+import { CompanyModel } from '../src/modules/companies/company.model.js';
+import { SubscriptionPlan } from '../src/modules/companies/company.types.js';
 
 const app = createApp();
 const strongPassword = 'Sup3rSecret!';
@@ -25,15 +27,26 @@ async function registerCompany(email: string, companyName: string): Promise<Regi
 }
 
 async function inviteEmployee(ownerToken: string, email: string): Promise<string> {
-  await request(app)
+  const invite = await request(app)
     .post('/api/v1/users')
     .set('Authorization', `Bearer ${ownerToken}`)
-    .send({ name: 'Employee', email, password: strongPassword, role: 'employee' });
+    .send({ name: 'Employee', email, role: 'employee' });
 
-  const login = await request(app)
-    .post('/api/v1/auth/login')
-    .send({ email, password: strongPassword });
-  return login.body.data.accessToken as string;
+  // Mailer isn't configured in the test environment (see tests/setup.ts),
+  // so the invite link comes back in the response instead of being emailed.
+  const token = new URL(invite.body.data.inviteLink as string).searchParams.get('token');
+  const accept = await request(app)
+    .post('/api/v1/auth/accept-invite')
+    .send({ token, password: strongPassword });
+  return accept.body.data.accessToken as string;
+}
+
+/** Basic caps warehouses at 1 (see plan.config.ts) - tests that legitimately need more than one warehouse per company upgrade first. */
+async function upgradeToEnterprisePlan(companyId: string): Promise<void> {
+  await CompanyModel.updateOne(
+    { _id: companyId },
+    { $set: { subscriptionPlan: SubscriptionPlan.ENTERPRISE } },
+  ).exec();
 }
 
 describe('POST /api/v1/warehouses', () => {
@@ -63,7 +76,8 @@ describe('POST /api/v1/warehouses', () => {
   });
 
   it('rejects a duplicate warehouse name within the same company', async () => {
-    const { token } = await registerCompany('owner3@wh.test', 'Warehouse Co 3');
+    const { token, companyId } = await registerCompany('owner3@wh.test', 'Warehouse Co 3');
+    await upgradeToEnterprisePlan(companyId);
 
     await request(app)
       .post('/api/v1/warehouses')
@@ -186,7 +200,8 @@ describe('PATCH & DELETE /api/v1/warehouses/:id', () => {
 
 describe('GET /api/v1/warehouses pagination', () => {
   it('paginates results', async () => {
-    const { token } = await registerCompany('owner7@wh.test', 'Warehouse Co 7');
+    const { token, companyId } = await registerCompany('owner7@wh.test', 'Warehouse Co 7');
+    await upgradeToEnterprisePlan(companyId);
 
     for (let i = 1; i <= 5; i += 1) {
       await request(app)

@@ -66,11 +66,20 @@ export async function checkLowStock(
 }
 
 // Fallback defaults if a company document is somehow missing (shouldn't
-// happen in practice) - match Company's own schema defaults.
-const DEFAULT_ABS_THRESHOLD = 10;
-const DEFAULT_PERCENT_THRESHOLD = 20; // stored/compared as 0-100, not 0-1
+// happen in practice) - match Company's own schema defaults. Exported so
+// report.service.ts can fall back identically when building the
+// inventarization PDF report.
+export const DEFAULT_DISCREPANCY_ABS_THRESHOLD = 10;
+export const DEFAULT_DISCREPANCY_PERCENT_THRESHOLD = 20; // stored/compared as 0-100, not 0-1
 
-function isLargeDiscrepancy(
+/**
+ * Exported (not just used internally by flagDiscrepancyIfLarge below) so
+ * report.service.ts can flag the exact same items as "large" in the
+ * inventarization PDF report - one rule, one place, instead of a second
+ * copy that could silently drift from what actually triggers a
+ * notification.
+ */
+export function isLargeDiscrepancy(
   discrepancy: number,
   systemQuantity: number,
   absThreshold: number,
@@ -100,8 +109,9 @@ export async function flagDiscrepancyIfLarge(
   session?: ClientSession,
 ): Promise<void> {
   const company = await companyRepository.findById(companyId);
-  const absThreshold = company?.largeDiscrepancyAbsThreshold ?? DEFAULT_ABS_THRESHOLD;
-  const percentThreshold = company?.largeDiscrepancyPercentThreshold ?? DEFAULT_PERCENT_THRESHOLD;
+  const absThreshold = company?.largeDiscrepancyAbsThreshold ?? DEFAULT_DISCREPANCY_ABS_THRESHOLD;
+  const percentThreshold =
+    company?.largeDiscrepancyPercentThreshold ?? DEFAULT_DISCREPANCY_PERCENT_THRESHOLD;
 
   if (!isLargeDiscrepancy(discrepancy, systemQuantity, absThreshold, percentThreshold)) return;
 

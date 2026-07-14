@@ -1,6 +1,7 @@
 import { Types } from 'mongoose';
 import { companyRepository } from '../companies/company.repository.js';
 import { userRepository } from '../users/user.repository.js';
+import { inviteRepository } from '../users/invite.repository.js';
 import { sessionRepository } from './session.repository.js';
 import { toPublicUser } from '../users/user.service.js';
 import { Role } from '../users/user.types.js';
@@ -100,6 +101,7 @@ export const authService = {
       name: input.ownerName,
       email: input.email,
       passwordHash,
+      passwordSet: true,
       role: Role.OWNER,
     });
 
@@ -110,6 +112,18 @@ export const authService = {
   async login(input: LoginInput, meta: SessionMeta = {}): Promise<AuthResult> {
     const user = await userRepository.findByEmailWithSecrets(input.email);
     if (!user) {
+      throw new UnauthorizedError('Invalid email or password');
+    }
+
+    // Deliberately the SAME message as a wrong-password below, not
+    // "please accept your invite first" - distinguishing the two would let
+    // an unauthenticated caller enumerate which emails belong to
+    // pending-invite accounts vs. real wrong-password attempts. The
+    // placeholder passwordHash on a pending user is unusable anyway (see
+    // user.service.ts inviteNewUser), so comparePassword would fail here
+    // regardless - this check just gives a clean, intentional short-circuit
+    // instead of relying on that as an implicit side effect.
+    if (!user.passwordSet) {
       throw new UnauthorizedError('Invalid email or password');
     }
 
@@ -125,6 +139,38 @@ export const authService = {
     const company = await companyRepository.findById(user.companyId.toString());
     if (!company || company.status !== CompanyStatus.ACTIVE) {
       throw new ForbiddenError('This company account is currently suspended');
+    }
+
+    const tokens = await issueTokenPair(user, meta);
+    return { user: toPublicUser(user), tokens };
+  },
+
+  /**
+   * Completes an invite: verifies the single-use token, lets the invited
+   * person choose their real password, deletes the token, and logs them
+   * in immediately (same AuthResult shape as login/registerCompany) so
+   * they land in a signed-in state without a second round trip.
+   */
+  async acceptInvite(
+    rawToken: string,
+    newPassword: string,
+    meta: SessionMeta = {},
+  ): Promise<AuthResult> {
+    const tokenHash = hashToken(rawToken);
+    const invite = await inviteRepository.findValidByTokenHash(tokenHash);
+    if (!invite) {
+      throw new UnauthorizedError('This invite link is invalid or has expired');
+    }
+
+    const passwordHash = await hashPassword(newPassword);
+    const user = await userRepository.setPassword(invite.userId.toString(), passwordHash);
+    await inviteRepository.deleteById(invite._id.toString());
+
+    if (!user) {
+      // The user was deleted between invite creation and acceptance -
+      // shouldn't happen in normal operation, but the token is now
+      // consumed either way (deleted above), so this can't be retried.
+      throw new UnauthorizedError('This invite link is invalid or has expired');
     }
 
     const tokens = await issueTokenPair(user, meta);

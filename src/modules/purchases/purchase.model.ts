@@ -4,6 +4,7 @@ import {
   type PurchaseDocumentShape,
   type PurchaseItemShape,
 } from './purchase.types.js';
+import { tenantScopePlugin } from '../../utils/tenantScopePlugin.js';
 
 export type PurchaseDocument = HydratedDocument<PurchaseDocumentShape>;
 
@@ -90,5 +91,7 @@ const purchaseSchema = new Schema<PurchaseDocumentShape>(
 purchaseSchema.index({ companyId: 1, status: 1 });
 purchaseSchema.index({ companyId: 1, supplierId: 1 });
 purchaseSchema.index({ companyId: 1, warehouseId: 1 });
+
+purchaseSchema.plugin(tenantScopePlugin);
 
 export const PurchaseModel = model<PurchaseDocumentShape>('Purchase', purchaseSchema);

@@ -2,6 +2,8 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import request from 'supertest';
 import { createApp } from '../src/app.js';
 import { anthropicClient } from '../src/utils/anthropicClient.js';
+import { CompanyModel } from '../src/modules/companies/company.model.js';
+import { SubscriptionPlan } from '../src/modules/companies/company.types.js';
 
 const app = createApp();
 const strongPassword = 'Sup3rSecret!';
@@ -42,6 +44,16 @@ async function createWarehouse(token: string, name: string): Promise<string> {
     .set('Authorization', `Bearer ${token}`)
     .send({ name });
   return res.body.data.id as string;
+}
+
+/** The AI narrative endpoint is gated behind Business+ (see requireFeature('ai')) - Basic is the default plan every test company starts on. */
+async function upgradeToBusinessPlan(token: string): Promise<void> {
+  const me = await request(app).get('/api/v1/companies/me').set('Authorization', `Bearer ${token}`);
+  const companyId = me.body.data.id as string;
+  await CompanyModel.updateOne(
+    { _id: companyId },
+    { $set: { subscriptionPlan: SubscriptionPlan.BUSINESS } },
+  ).exec();
 }
 
 async function createInventory(
@@ -165,6 +177,7 @@ describe('Multi-tenant isolation for waste analytics', () => {
 describe('GET /api/v1/analytics/waste/narrative', () => {
   it('includes the deterministic numbers plus a mocked AI narrative', async () => {
     const token = await registerCompany('owner5@an.test', 'AN Co 5');
+    await upgradeToBusinessPlan(token);
     const productId = await createProduct(token, 'SKU-5', 10);
     const warehouseId = await createWarehouse(token, 'Main');
     await createInventory(token, productId, warehouseId, 50);
@@ -178,5 +191,16 @@ describe('GET /api/v1/analytics/waste/narrative', () => {
     expect(res.body.data.narrative).toBe(FAKE_NARRATIVE);
     expect(res.body.data.totalQuantity).toBe(5);
     expect(askClaudeSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it('rejects a Basic-plan company with 403 (AI narrative requires Business+)', async () => {
+    const token = await registerCompany('owner6@an.test', 'AN Co 6');
+
+    const res = await request(app)
+      .get('/api/v1/analytics/waste/narrative')
+      .set('Authorization', `Bearer ${token}`);
+
+    expect(res.status).toBe(403);
+    expect(askClaudeSpy).not.toHaveBeenCalled();
   });
 });

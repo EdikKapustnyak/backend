@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import * as productController from './product.controller.js';
 import { authenticate } from '../../middlewares/authenticate.js';
+import { requireActiveSubscription } from '../../middlewares/requireActiveSubscription.js';
 import { requireRole } from '../../middlewares/requireRole.js';
 import { validate } from '../../middlewares/validate.js';
 import { isValidId } from '../../middlewares/isValidId.js';
@@ -16,6 +17,7 @@ export const productRouter = Router();
 // companyId for every operation below is always derived from the verified
 // access token (see product.controller.ts), never from the client.
 productRouter.use(authenticate);
+productRouter.use(requireActiveSubscription);
 
 productRouter.get(
   '/',

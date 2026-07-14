@@ -1,5 +1,6 @@
 import { Schema, model, type HydratedDocument } from 'mongoose';
 import type { LocalEventItem, LocalEventsCacheDocumentShape } from './local-event.types.js';
+import { tenantScopePlugin } from '../../utils/tenantScopePlugin.js';
 
 export type LocalEventsCacheDocument = HydratedDocument<LocalEventsCacheDocumentShape>;
 
@@ -33,6 +34,8 @@ const localEventsCacheSchema = new Schema<LocalEventsCacheDocumentShape>(
 // MongoDB automatically deletes the document once expiresAt is in the past -
 // no manual cleanup job needed for stale cache entries.
 localEventsCacheSchema.index({ expiresAt: 1 }, { expireAfterSeconds: 0 });
+
+localEventsCacheSchema.plugin(tenantScopePlugin);
 
 export const LocalEventsCacheModel = model<LocalEventsCacheDocumentShape>(
   'LocalEventsCache',

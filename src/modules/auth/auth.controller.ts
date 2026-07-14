@@ -57,6 +57,17 @@ export const login = ctrlWrapper(async (req: Request, res: Response) => {
   sendSuccess(res, { user: result.user, accessToken: result.tokens.accessToken }, 'Logged in successfully');
 });
 
+/** Completes an invite and immediately signs the user in - same response shape as login. */
+export const acceptInvite = ctrlWrapper(async (req: Request, res: Response) => {
+  const result = await authService.acceptInvite(
+    req.body.token,
+    req.body.password,
+    sessionMetaFromRequest(req),
+  );
+  setRefreshCookie(res, result.tokens.refreshToken);
+  sendSuccess(res, { user: result.user, accessToken: result.tokens.accessToken }, 'Invite accepted, welcome aboard');
+});
+
 export const refresh = ctrlWrapper(async (req: Request, res: Response) => {
   const refreshToken = req.cookies?.[env.REFRESH_COOKIE_NAME] as string | undefined;
   if (!refreshToken) {

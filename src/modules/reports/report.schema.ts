@@ -2,6 +2,7 @@ import { z } from 'zod';
 import { objectIdString } from '../../utils/objectId.js';
 import { PurchaseStatus } from '../purchases/purchase.types.js';
 import { WriteOffReason, WriteOffStatus } from '../write-offs/write-off.types.js';
+import { InventarizationStatus } from '../inventarizations/inventarization.types.js';
 
 /** Accepts "2026-01-01" as well as full ISO timestamps. */
 const dateString = z
@@ -34,5 +35,17 @@ export const writeOffsReportQuerySchema = z
     message: '"from" must be before or equal to "to"',
   });
 
+export const inventarizationsReportQuerySchema = z
+  .object({
+    from: dateString.optional(),
+    to: dateString.optional(),
+    warehouseId: objectIdString.optional(),
+    status: z.nativeEnum(InventarizationStatus).optional(),
+  })
+  .refine((data) => !data.from || !data.to || data.from <= data.to, {
+    message: '"from" must be before or equal to "to"',
+  });
+
 export type PurchasesReportQuery = z.infer<typeof purchasesReportQuerySchema>;
 export type WriteOffsReportQuery = z.infer<typeof writeOffsReportQuerySchema>;
+export type InventarizationsReportQuery = z.infer<typeof inventarizationsReportQuerySchema>;

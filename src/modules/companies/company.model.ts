@@ -30,6 +30,23 @@ const companySchema = new Schema<CompanyDocumentShape>(
       enum: Object.values(CompanyStatus),
       default: CompanyStatus.ACTIVE,
     },
+    stripeCustomerId: {
+      type: String,
+      default: null,
+      index: true,
+    },
+    stripeSubscriptionId: {
+      type: String,
+      default: null,
+    },
+    currentPeriodEnd: {
+      type: Date,
+      default: null,
+    },
+    pastDueSince: {
+      type: Date,
+      default: null,
+    },
     city: {
       type: String,
       required: true,

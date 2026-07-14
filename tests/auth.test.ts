@@ -137,15 +137,22 @@ describe('RBAC', () => {
       .send({
         name: 'Bob Employee',
         email: 'bob@acme.test',
-        password: strongPassword,
         role: 'employee',
       });
     expect(inviteRes.status).toBe(201);
 
-    const employeeLogin = await request(app)
-      .post('/api/v1/auth/login')
-      .send({ email: 'bob@acme.test', password: strongPassword });
-    const employeeToken = employeeLogin.body.data.accessToken as string;
+    // Mailer isn't configured in the test environment (see tests/setup.ts),
+    // so the invite link comes back in the response instead of being
+    // emailed - extract the token from it the same way a frontend would
+    // parse it from the accept-invite URL.
+    const inviteLink = inviteRes.body.data.inviteLink as string;
+    const token = new URL(inviteLink).searchParams.get('token');
+
+    const accept = await request(app)
+      .post('/api/v1/auth/accept-invite')
+      .send({ token, password: strongPassword });
+    expect(accept.status).toBe(200);
+    const employeeToken = accept.body.data.accessToken as string;
 
     const forbiddenInvite = await request(app)
       .post('/api/v1/users')
@@ -153,7 +160,6 @@ describe('RBAC', () => {
       .send({
         name: 'Carol',
         email: 'carol@acme.test',
-        password: strongPassword,
         role: 'employee',
       });
 

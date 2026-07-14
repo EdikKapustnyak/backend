@@ -1,5 +1,6 @@
 import { Schema, model, type HydratedDocument } from 'mongoose';
 import { WriteOffReason, WriteOffStatus, type WriteOffDocumentShape } from './write-off.types.js';
+import { tenantScopePlugin } from '../../utils/tenantScopePlugin.js';
 
 export type WriteOffDocument = HydratedDocument<WriteOffDocumentShape>;
 
@@ -69,5 +70,7 @@ writeOffSchema.index({ companyId: 1, productId: 1 });
 writeOffSchema.index({ companyId: 1, warehouseId: 1 });
 writeOffSchema.index({ companyId: 1, reason: 1 });
 writeOffSchema.index({ companyId: 1, status: 1 });
+
+writeOffSchema.plugin(tenantScopePlugin);
 
 export const WriteOffModel = model<WriteOffDocumentShape>('WriteOff', writeOffSchema);

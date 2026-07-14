@@ -4,10 +4,14 @@ import { sendSuccess } from '../../utils/apiResponse.js';
 import { parsePaginationParams, calculatePaginationData } from '../../utils/pagination.js';
 import { warehouseRepository } from './warehouse.repository.js';
 import { toPublicWarehouse } from './warehouse.service.js';
+import { billingService } from '../billing/billing.service.js';
 import { UnauthorizedError, NotFoundError, ConflictError } from '../../errors/index.js';
 
 export const createWarehouse = ctrlWrapper(async (req: Request, res: Response) => {
   if (!req.auth) throw new UnauthorizedError();
+
+  const currentCount = await warehouseRepository.countActiveInCompany(req.auth.companyId);
+  await billingService.assertResourceLimit(req.auth.companyId, 'warehouses', currentCount);
 
   const warehouse = await warehouseRepository.create({
     // Tenant identity always comes from the verified JWT, never the body.

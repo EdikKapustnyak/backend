@@ -1,6 +1,9 @@
 import { z } from 'zod';
 
-const passwordSchema = z
+// Exported so other flows that let a user set a real password (accept-invite
+// today; a future password-reset would follow the same shape) apply the
+// exact same complexity rule as registration - one policy, one place.
+export const passwordSchema = z
   .string()
   .min(8, 'Password must be at least 8 characters')
   .max(72, 'Password must be at most 72 characters')
@@ -24,5 +27,11 @@ export const loginSchema = z.object({
   password: z.string().min(1, 'Password is required'),
 });
 
+export const acceptInviteSchema = z.object({
+  token: z.string().min(1, 'Token is required'),
+  password: passwordSchema,
+});
+
 export type RegisterCompanyInput = z.infer<typeof registerCompanySchema>;
 export type LoginInput = z.infer<typeof loginSchema>;
+export type AcceptInviteInput = z.infer<typeof acceptInviteSchema>;

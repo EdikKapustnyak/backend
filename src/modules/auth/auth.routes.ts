@@ -4,7 +4,7 @@ import { validate } from '../../middlewares/validate.js';
 import { authenticate } from '../../middlewares/authenticate.js';
 import { authRateLimiter } from '../../middlewares/rateLimiter.js';
 import { isValidId } from '../../middlewares/isValidId.js';
-import { registerCompanySchema, loginSchema } from './auth.schema.js';
+import { registerCompanySchema, loginSchema, acceptInviteSchema } from './auth.schema.js';
 
 export const authRouter = Router();
 
@@ -20,6 +20,13 @@ authRouter.post(
   authRateLimiter,
   validate({ body: loginSchema }),
   authController.login,
+);
+
+authRouter.post(
+  '/accept-invite',
+  authRateLimiter,
+  validate({ body: acceptInviteSchema }),
+  authController.acceptInvite,
 );
 
 authRouter.post('/refresh', authController.refresh);

@@ -1,8 +1,13 @@
 import type { Request, Response } from 'express';
 import { ctrlWrapper } from '../../utils/ctrlWrapper.js';
-import { buildPurchasesReportPdf, buildWriteOffsReportPdf } from './report.service.js';
+import {
+  buildPurchasesReportPdf,
+  buildWriteOffsReportPdf,
+  buildInventarizationsReportPdf,
+} from './report.service.js';
 import type { PurchaseStatus } from '../purchases/purchase.types.js';
 import type { WriteOffReason, WriteOffStatus } from '../write-offs/write-off.types.js';
+import type { InventarizationStatus } from '../inventarizations/inventarization.types.js';
 import { UnauthorizedError } from '../../errors/index.js';
 
 function buildFilename(base: string, from?: Date, to?: Date): string {
@@ -61,6 +66,29 @@ export const writeOffsReportPdf = ctrlWrapper(async (req: Request, res: Response
   res.setHeader(
     'Content-Disposition',
     `attachment; filename="${buildFilename('write-offs-report', from, to)}"`,
+  );
+  doc.pipe(res);
+});
+
+export const inventarizationsReportPdf = ctrlWrapper(async (req: Request, res: Response) => {
+  if (!req.auth) throw new UnauthorizedError();
+
+  const from = req.query['from'] as Date | undefined;
+  const to = req.query['to'] as Date | undefined;
+  const warehouseId = req.query['warehouseId'] as string | undefined;
+  const status = req.query['status'] as InventarizationStatus | undefined;
+
+  const doc = await buildInventarizationsReportPdf(req.auth.companyId, {
+    from,
+    to,
+    warehouseId,
+    status,
+  });
+
+  res.setHeader('Content-Type', 'application/pdf');
+  res.setHeader(
+    'Content-Disposition',
+    `attachment; filename="${buildFilename('inventarizations-report', from, to)}"`,
   );
   doc.pipe(res);
 });

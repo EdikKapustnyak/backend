@@ -1,12 +1,15 @@
 import { describe, it, expect } from 'vitest';
 import request from 'supertest';
 import { createApp } from '../src/app.js';
+import { CompanyModel } from '../src/modules/companies/company.model.js';
+import { SubscriptionPlan } from '../src/modules/companies/company.types.js';
 
 const app = createApp();
 const strongPassword = 'Sup3rSecret!';
 
 interface Company {
   token: string;
+  companyId: string;
 }
 
 async function registerCompany(email: string, companyName: string): Promise<Company> {
@@ -17,19 +20,33 @@ async function registerCompany(email: string, companyName: string): Promise<Comp
     email,
     password: strongPassword,
   });
-  return { token: res.body.data.accessToken as string };
+  return {
+    token: res.body.data.accessToken as string,
+    companyId: res.body.data.user.companyId as string,
+  };
+}
+
+/** Basic caps warehouses at 1 (see plan.config.ts) - tests that legitimately need more than one warehouse per company upgrade first. */
+async function upgradeToEnterprisePlan(companyId: string): Promise<void> {
+  await CompanyModel.updateOne(
+    { _id: companyId },
+    { $set: { subscriptionPlan: SubscriptionPlan.ENTERPRISE } },
+  ).exec();
 }
 
 async function inviteEmployee(ownerToken: string, email: string): Promise<string> {
-  await request(app)
+  const invite = await request(app)
     .post('/api/v1/users')
     .set('Authorization', `Bearer ${ownerToken}`)
-    .send({ name: 'Employee', email, password: strongPassword, role: 'employee' });
+    .send({ name: 'Employee', email, role: 'employee' });
 
-  const login = await request(app)
-    .post('/api/v1/auth/login')
-    .send({ email, password: strongPassword });
-  return login.body.data.accessToken as string;
+  // Mailer isn't configured in the test environment (see tests/setup.ts),
+  // so the invite link comes back in the response instead of being emailed.
+  const token = new URL(invite.body.data.inviteLink as string).searchParams.get('token');
+  const accept = await request(app)
+    .post('/api/v1/auth/accept-invite')
+    .send({ token, password: strongPassword });
+  return accept.body.data.accessToken as string;
 }
 
 async function createProduct(token: string, sku: string): Promise<string> {
@@ -256,7 +273,8 @@ describe('Multi-tenant isolation for inventory', () => {
 
 describe('GET /api/v1/inventory filtering', () => {
   it('filters by warehouseId', async () => {
-    const { token } = await registerCompany('owner12@inv.test', 'Inv Co 12');
+    const { token, companyId } = await registerCompany('owner12@inv.test', 'Inv Co 12');
+    await upgradeToEnterprisePlan(companyId);
     const productId = await createProduct(token, 'SKU-12');
     const warehouseA = await createWarehouse(token, 'Warehouse A');
     const warehouseB = await createWarehouse(token, 'Warehouse B');

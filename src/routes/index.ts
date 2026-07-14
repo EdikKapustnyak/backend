@@ -15,12 +15,14 @@ import { receiptRouter } from '../modules/receipts/receipt.routes.js';
 import { companyRouter } from '../modules/companies/company.routes.js';
 import { analyticsRouter } from '../modules/analytics/analytics.routes.js';
 import { localEventRouter } from '../modules/local-events/local-event.routes.js';
+import { billingRouter } from '../modules/billing/billing.routes.js';
 
 export const apiRouter = Router();
 
 apiRouter.use('/auth', authRouter);
 apiRouter.use('/users', userRouter);
 apiRouter.use('/companies', companyRouter);
+apiRouter.use('/billing', billingRouter);
 apiRouter.use('/analytics', analyticsRouter);
 apiRouter.use('/local-events', localEventRouter);
 apiRouter.use('/warehouses', warehouseRouter);

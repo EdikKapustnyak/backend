@@ -1,6 +1,8 @@
 import { describe, it, expect } from 'vitest';
 import request from 'supertest';
 import { createApp } from '../src/app.js';
+import { CompanyModel } from '../src/modules/companies/company.model.js';
+import { SubscriptionPlan } from '../src/modules/companies/company.types.js';
 
 const app = createApp();
 const strongPassword = 'Sup3rSecret!';
@@ -17,15 +19,28 @@ async function registerCompany(email: string, companyName: string): Promise<stri
 }
 
 async function inviteEmployee(ownerToken: string, email: string): Promise<string> {
-  await request(app)
+  const invite = await request(app)
     .post('/api/v1/users')
     .set('Authorization', `Bearer ${ownerToken}`)
-    .send({ name: 'Employee', email, password: strongPassword, role: 'employee' });
+    .send({ name: 'Employee', email, role: 'employee' });
 
-  const login = await request(app)
-    .post('/api/v1/auth/login')
-    .send({ email, password: strongPassword });
-  return login.body.data.accessToken as string;
+  // Mailer isn't configured in the test environment (see tests/setup.ts),
+  // so the invite link comes back in the response instead of being emailed.
+  const token = new URL(invite.body.data.inviteLink as string).searchParams.get('token');
+  const accept = await request(app)
+    .post('/api/v1/auth/accept-invite')
+    .send({ token, password: strongPassword });
+  return accept.body.data.accessToken as string;
+}
+
+/** Basic caps warehouses at 1 (see plan.config.ts) - tests that legitimately need more than one warehouse per company upgrade first. Takes the owner's token (not a companyId) since registerCompany() in this file returns a plain token string. */
+async function upgradeToEnterprisePlan(token: string): Promise<void> {
+  const me = await request(app).get('/api/v1/companies/me').set('Authorization', `Bearer ${token}`);
+  const companyId = me.body.data.id as string;
+  await CompanyModel.updateOne(
+    { _id: companyId },
+    { $set: { subscriptionPlan: SubscriptionPlan.ENTERPRISE } },
+  ).exec();
 }
 
 async function createProduct(token: string, sku: string): Promise<string> {
@@ -204,5 +219,124 @@ describe('GET /api/v1/reports/write-offs/pdf', () => {
     // No "lost" write-offs exist (only "expired"), so this must still be a
     // valid, structurally correct (short) PDF, not an error.
     expectValidPdf(res);
+  });
+});
+
+describe('GET /api/v1/reports/inventarizations/pdf', () => {
+  async function completedInventarization(
+    ownerToken: string,
+    warehouseId: string,
+    productId: string,
+    initialQuantity: number,
+    countedQuantity: number,
+  ): Promise<void> {
+    const created = await request(app)
+      .post('/api/v1/inventarizations')
+      .set('Authorization', `Bearer ${ownerToken}`)
+      .send({ warehouseId });
+    await request(app)
+      .patch(`/api/v1/inventarizations/${created.body.data.id}/count`)
+      .set('Authorization', `Bearer ${ownerToken}`)
+      .send({ counts: [{ productId, countedQuantity }] });
+    await request(app)
+      .post(`/api/v1/inventarizations/${created.body.data.id}/complete`)
+      .set('Authorization', `Bearer ${ownerToken}`);
+  }
+
+  it('generates a valid PDF with data, flagging a large discrepancy', async () => {
+    const ownerToken = await registerCompany('owner10@rp.test', 'RP Co 10');
+    const productId = await createProduct(ownerToken, 'SKU-10');
+    const warehouseId = await createWarehouse(ownerToken, 'Main');
+    await request(app)
+      .post('/api/v1/inventory')
+      .set('Authorization', `Bearer ${ownerToken}`)
+      .send({ productId, warehouseId, quantity: 100 });
+
+    // 100 -> 80 counted is a discrepancy of -20, which clears the default
+    // largeDiscrepancyAbsThreshold (10) on Company - this is the row the
+    // report should flag in its "Крупных расхожд." column.
+    await completedInventarization(ownerToken, warehouseId, productId, 100, 80);
+
+    const res = await request(app)
+      .get('/api/v1/reports/inventarizations/pdf')
+      .set('Authorization', `Bearer ${ownerToken}`);
+
+    expectValidPdf(res);
+    expect(res.headers['content-disposition']).toMatch(/attachment/);
+  });
+
+  it('generates a valid (short) PDF when there is no data', async () => {
+    const ownerToken = await registerCompany('owner11@rp.test', 'RP Co 11');
+
+    const res = await request(app)
+      .get('/api/v1/reports/inventarizations/pdf')
+      .set('Authorization', `Bearer ${ownerToken}`);
+
+    expectValidPdf(res);
+  });
+
+  it('lets an employee generate the report (read-only)', async () => {
+    const ownerToken = await registerCompany('owner12@rp.test', 'RP Co 12');
+    const employeeToken = await inviteEmployee(ownerToken, 'employee12@rp.test');
+
+    const res = await request(app)
+      .get('/api/v1/reports/inventarizations/pdf')
+      .set('Authorization', `Bearer ${employeeToken}`);
+
+    expectValidPdf(res);
+  });
+
+  it('filters by warehouseId', async () => {
+    const ownerToken = await registerCompany('owner13@rp.test', 'RP Co 13');
+    await upgradeToEnterprisePlan(ownerToken);
+    const productId = await createProduct(ownerToken, 'SKU-13');
+    const warehouseA = await createWarehouse(ownerToken, 'Warehouse A');
+    const warehouseB = await createWarehouse(ownerToken, 'Warehouse B');
+    await request(app)
+      .post('/api/v1/inventory')
+      .set('Authorization', `Bearer ${ownerToken}`)
+      .send({ productId, warehouseId: warehouseA, quantity: 50 });
+    await completedInventarization(ownerToken, warehouseA, productId, 50, 50);
+
+    // warehouseB has no inventarizations at all - filtering by it must still
+    // return a valid, structurally correct (short) PDF, not an error.
+    const res = await request(app)
+      .get(`/api/v1/reports/inventarizations/pdf?warehouseId=${warehouseB}`)
+      .set('Authorization', `Bearer ${ownerToken}`);
+
+    expectValidPdf(res);
+  });
+
+  it('filters by status', async () => {
+    const ownerToken = await registerCompany('owner14@rp.test', 'RP Co 14');
+    const productId = await createProduct(ownerToken, 'SKU-14');
+    const warehouseId = await createWarehouse(ownerToken, 'Main');
+    await request(app)
+      .post('/api/v1/inventory')
+      .set('Authorization', `Bearer ${ownerToken}`)
+      .send({ productId, warehouseId, quantity: 30 });
+    // Draft only - never counted/completed.
+    await request(app)
+      .post('/api/v1/inventarizations')
+      .set('Authorization', `Bearer ${ownerToken}`)
+      .send({ warehouseId });
+
+    const res = await request(app)
+      .get('/api/v1/reports/inventarizations/pdf?status=completed')
+      .set('Authorization', `Bearer ${ownerToken}`);
+
+    // No completed inventarizations exist (only a draft), so this must
+    // still be a valid, structurally correct (short) PDF, not an error.
+    expectValidPdf(res);
+  });
+
+  it('rejects an invalid date range (from after to)', async () => {
+    const ownerToken = await registerCompany('owner15@rp.test', 'RP Co 15');
+
+    const res = await request(app)
+      .get('/api/v1/reports/inventarizations/pdf?from=2026-06-01&to=2026-01-01')
+      .set('Authorization', `Bearer ${ownerToken}`);
+
+    expect(res.status).toBe(422);
   });
 });

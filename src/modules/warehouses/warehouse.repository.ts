@@ -34,6 +34,11 @@ export const warehouseRepository = {
     return WarehouseModel.create(input);
   },
 
+  /** Only active warehouses count against the plan limit - deactivating one frees up room for a new one. */
+  async countActiveInCompany(companyId: string): Promise<number> {
+    return WarehouseModel.countDocuments({ companyId, isActive: true }).exec();
+  },
+
   /** Tenant-scoped lookup - always requires companyId to prevent cross-tenant access. */
   async findByIdInCompany(id: string, companyId: string): Promise<WarehouseDocument | null> {
     return WarehouseModel.findOne({ _id: id, companyId }).exec();
