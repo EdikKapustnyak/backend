@@ -2,32 +2,29 @@ import type { NextFunction, Request, Response } from 'express';
 import multer, { MulterError } from 'multer';
 import { BadRequestError } from '../errors/index.js';
 
-export const ALLOWED_MIME_TYPES = new Set(['image/jpeg', 'image/png', 'image/webp', 'application/pdf']);
-export const MAX_FILE_SIZE_BYTES = 10 * 1024 * 1024; // 10MB
+const XLSX_MIME_TYPE = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
+const MAX_FILE_SIZE_BYTES = 10 * 1024 * 1024; // 10MB - matches middlewares/upload.ts's receipt limit
 
+/**
+ * Separate multer instance from middlewares/upload.ts (which is
+ * image/PDF-only, for receipts) - a bulk import file is a different kind
+ * of upload with a different allowed type, and reusing/parameterizing the
+ * receipts uploader would risk that module accepting xlsx too if the
+ * allowlist were ever merged carelessly.
+ */
 const upload = multer({
   storage: multer.memoryStorage(),
   limits: { fileSize: MAX_FILE_SIZE_BYTES },
   fileFilter: (_req, file, cb) => {
-    if (!ALLOWED_MIME_TYPES.has(file.mimetype)) {
-      cb(
-        new BadRequestError(
-          `Unsupported file type: ${file.mimetype}. Allowed: JPEG, PNG, WEBP, PDF`,
-        ),
-      );
+    if (file.mimetype !== XLSX_MIME_TYPE) {
+      cb(new BadRequestError(`Unsupported file type: ${file.mimetype}. Allowed: XLSX`));
       return;
     }
     cb(null, true);
   },
 });
 
-/**
- * Wraps multer's single-file upload as ordinary Express middleware,
- * translating its errors (wrong type, too large) into our AppError shape
- * so they come back through the standard { success: false, error } JSON
- * envelope instead of multer's raw error format.
- */
-export function uploadSingleFile(fieldName: string) {
+export function uploadSingleXlsxFile(fieldName: string) {
   const middleware = upload.single(fieldName);
   return (req: Request, res: Response, next: NextFunction): void => {
     middleware(req, res, (err: unknown) => {

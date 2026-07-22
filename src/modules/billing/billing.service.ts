@@ -200,17 +200,21 @@ export const billingService = {
 
   /**
    * Lazily escalates PAST_DUE -> SUSPENDED once the grace period has
-   * elapsed. There's no cron/job scheduler anywhere in this codebase
-   * (TTL-indexed collections rely on MongoDB's own background sweep
-   * instead), so this follows the same "check lazily, right when the
-   * value actually gets used" shape rather than introducing one - called
-   * from requireActiveSubscription and authService.login, the two places
-   * that read company.status for enforcement. A company that stops
-   * making requests entirely (and never logs in again) never gets
-   * escalated - acceptable today since Stripe's own subscription
-   * cancellation (customer.subscription.deleted -> SUSPENDED, see
-   * handleWebhookEvent above) is the actual backstop; this just makes
-   * the transition happen sooner, driven by the company's own activity.
+   * elapsed, for the request/login currently in flight - called from
+   * requireActiveSubscription and authService.login, the two places that
+   * read company.status for enforcement. This makes the transition
+   * visible immediately to whoever is actively hitting the API, without
+   * waiting for the next sweep.
+   *
+   * jobs/gracePeriodSweep.ts runs the same escalation on a timer
+   * (GRACE_PERIOD_SWEEP_INTERVAL_MS, hourly by default) as a companion to
+   * this - it catches companies that stop making requests entirely during
+   * their grace period, which this function alone would never escalate
+   * since it only runs when triggered by a request. Stripe's own
+   * subscription cancellation (customer.subscription.deleted ->
+   * SUSPENDED, see handleWebhookEvent above) remains the actual backstop
+   * either way; both of these only affect how promptly our own DB
+   * reflects that a grace period ran out.
    */
   async escalateIfGracePeriodElapsed(company: CompanyDocument): Promise<CompanyDocument> {
     if (company.status !== CompanyStatus.PAST_DUE || !company.pastDueSince) {

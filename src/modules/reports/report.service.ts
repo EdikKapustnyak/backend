@@ -1,13 +1,10 @@
 import { companyRepository } from '../companies/company.repository.js';
 import { purchaseRepository } from '../purchases/purchase.repository.js';
 import { PurchaseStatus } from '../purchases/purchase.types.js';
-import { PURCHASE_STATUS_LABELS } from '../purchases/purchase.labels.js';
 import { writeOffRepository } from '../write-offs/write-off.repository.js';
 import { WriteOffReason, WriteOffStatus } from '../write-offs/write-off.types.js';
-import { WRITE_OFF_REASON_LABELS, WRITE_OFF_STATUS_LABELS } from '../write-offs/write-off.labels.js';
 import { inventarizationRepository } from '../inventarizations/inventarization.repository.js';
 import { InventarizationStatus } from '../inventarizations/inventarization.types.js';
-import { INVENTARIZATION_STATUS_LABELS } from '../inventarizations/inventarization.labels.js';
 import {
   isLargeDiscrepancy,
   DEFAULT_DISCREPANCY_ABS_THRESHOLD,
@@ -16,6 +13,8 @@ import {
 import { supplierRepository } from '../suppliers/supplier.repository.js';
 import { warehouseRepository } from '../warehouses/warehouse.repository.js';
 import { productRepository } from '../products/product.repository.js';
+import { REPORT_DICTIONARIES } from '../../i18n/reportDictionary.js';
+import type { ReportLanguage } from '../../i18n/reportLanguage.js';
 import {
   renderPurchasesReportPdf,
   renderWriteOffsReportPdf,
@@ -23,7 +22,15 @@ import {
   type PurchasesReportRow,
   type WriteOffsReportRow,
   type InventarizationsReportRow,
-} from './report.pdf.js';
+} from './report.html.js';
+
+/**
+ * Status/reason enum values are passed straight through into each
+ * report's rows (not pre-translated here) - report.html.ts localizes
+ * them via REPORT_DICTIONARIES at render time, based on `lang`. This is
+ * the one place that decides which language a given PDF comes out in;
+ * everything downstream is lang-aware because of it.
+ */
 
 interface PurchasesReportFilter {
   from?: Date;
@@ -36,9 +43,11 @@ interface PurchasesReportFilter {
 export async function buildPurchasesReportPdf(
   companyId: string,
   filter: PurchasesReportFilter,
-): Promise<PDFKit.PDFDocument> {
+  lang: ReportLanguage,
+): Promise<Buffer> {
+  const dict = REPORT_DICTIONARIES[lang];
   const company = await companyRepository.findById(companyId);
-  const companyName = company?.name ?? 'Компания';
+  const companyName = company?.name ?? dict.unknownLabel;
 
   const [purchases, suppliers, warehouses] = await Promise.all([
     purchaseRepository.findManyForReport({ companyId, ...filter }),
@@ -51,11 +60,11 @@ export async function buildPurchasesReportPdf(
 
   const rows: PurchasesReportRow[] = purchases.map((purchase) => ({
     date: purchase.createdAt,
-    supplierName: supplierNameById.get(purchase.supplierId.toString()) ?? 'Неизвестно',
-    warehouseName: warehouseNameById.get(purchase.warehouseId.toString()) ?? 'Неизвестно',
+    supplierName: supplierNameById.get(purchase.supplierId.toString()) ?? dict.unknownLabel,
+    warehouseName: warehouseNameById.get(purchase.warehouseId.toString()) ?? dict.unknownLabel,
     itemsCount: purchase.items.length,
     totalAmount: purchase.totalAmount,
-    status: PURCHASE_STATUS_LABELS[purchase.status],
+    status: purchase.status,
   }));
 
   const totalAmount = rows.reduce((sum, row) => sum + row.totalAmount, 0);
@@ -72,6 +81,7 @@ export async function buildPurchasesReportPdf(
     .sort((a, b) => b.totalAmount - a.totalAmount);
 
   return renderPurchasesReportPdf({
+    lang,
     companyName,
     generatedAt: new Date(),
     from: filter.from ?? null,
@@ -94,9 +104,11 @@ interface WriteOffsReportFilter {
 export async function buildWriteOffsReportPdf(
   companyId: string,
   filter: WriteOffsReportFilter,
-): Promise<PDFKit.PDFDocument> {
+  lang: ReportLanguage,
+): Promise<Buffer> {
+  const dict = REPORT_DICTIONARIES[lang];
   const company = await companyRepository.findById(companyId);
-  const companyName = company?.name ?? 'Компания';
+  const companyName = company?.name ?? dict.unknownLabel;
 
   const [writeOffs, products, warehouses] = await Promise.all([
     writeOffRepository.findManyForReport({ companyId, ...filter }),
@@ -109,16 +121,16 @@ export async function buildWriteOffsReportPdf(
 
   const rows: WriteOffsReportRow[] = writeOffs.map((writeOff) => ({
     date: writeOff.createdAt,
-    productName: productNameById.get(writeOff.productId.toString()) ?? 'Неизвестно',
-    warehouseName: warehouseNameById.get(writeOff.warehouseId.toString()) ?? 'Неизвестно',
+    productName: productNameById.get(writeOff.productId.toString()) ?? dict.unknownLabel,
+    warehouseName: warehouseNameById.get(writeOff.warehouseId.toString()) ?? dict.unknownLabel,
     quantity: writeOff.quantity,
-    reason: WRITE_OFF_REASON_LABELS[writeOff.reason],
-    status: WRITE_OFF_STATUS_LABELS[writeOff.status],
+    reason: writeOff.reason,
+    status: writeOff.status,
   }));
 
   const totalQuantity = rows.reduce((sum, row) => sum + row.quantity, 0);
 
-  const byReasonMap = new Map<string, { totalQuantity: number; count: number }>();
+  const byReasonMap = new Map<WriteOffReason, { totalQuantity: number; count: number }>();
   for (const row of rows) {
     const entry = byReasonMap.get(row.reason) ?? { totalQuantity: 0, count: 0 };
     entry.totalQuantity += row.quantity;
@@ -130,6 +142,7 @@ export async function buildWriteOffsReportPdf(
     .sort((a, b) => b.totalQuantity - a.totalQuantity);
 
   return renderWriteOffsReportPdf({
+    lang,
     companyName,
     generatedAt: new Date(),
     from: filter.from ?? null,
@@ -150,9 +163,11 @@ interface InventarizationsReportFilter {
 export async function buildInventarizationsReportPdf(
   companyId: string,
   filter: InventarizationsReportFilter,
-): Promise<PDFKit.PDFDocument> {
+  lang: ReportLanguage,
+): Promise<Buffer> {
+  const dict = REPORT_DICTIONARIES[lang];
   const company = await companyRepository.findById(companyId);
-  const companyName = company?.name ?? 'Компания';
+  const companyName = company?.name ?? dict.unknownLabel;
   // Same thresholds (and the same isLargeDiscrepancy rule) that
   // notification.service.ts uses to decide whether an item's discrepancy
   // is worth a notification - the report flags the exact same items,
@@ -180,11 +195,11 @@ export async function buildInventarizationsReportPdf(
 
     return {
       date: inv.completedAt ?? inv.createdAt,
-      warehouseName: warehouseNameById.get(inv.warehouseId.toString()) ?? 'Неизвестно',
+      warehouseName: warehouseNameById.get(inv.warehouseId.toString()) ?? dict.unknownLabel,
       itemsCount: inv.items.length,
       countedItemsCount,
       largeDiscrepancyCount,
-      status: INVENTARIZATION_STATUS_LABELS[inv.status],
+      status: inv.status,
     };
   });
 
@@ -202,6 +217,7 @@ export async function buildInventarizationsReportPdf(
     .sort((a, b) => b.largeDiscrepancyCount - a.largeDiscrepancyCount);
 
   return renderInventarizationsReportPdf({
+    lang,
     companyName,
     generatedAt: new Date(),
     from: filter.from ?? null,

@@ -21,6 +21,16 @@ const envSchema = z.object({
   RATE_LIMIT_WINDOW_MS: z.coerce.number().int().positive().default(900_000),
   RATE_LIMIT_MAX: z.coerce.number().int().positive().default(100),
 
+  // How often jobs/gracePeriodSweep.ts scans for PAST_DUE companies whose
+  // grace period has elapsed. Grace period itself is measured in whole
+  // days (GRACE_PERIOD_DAYS, billing/plan.config.ts), so there's no need
+  // to sweep more often than roughly hourly - this just bounds how late
+  // our own DB status can lag behind a company's actual grace deadline
+  // for a company that stops making requests entirely (see
+  // jobs/gracePeriodSweep.ts for why this exists alongside the lazy,
+  // per-request escalation in billing.service.ts).
+  GRACE_PERIOD_SWEEP_INTERVAL_MS: z.coerce.number().int().positive().default(3_600_000),
+
   // Cloudflare R2 (S3-compatible) - only required for the receipts photo
   // upload feature. Left optional here so the rest of the app (and the
   // test suite) works without it configured; objectStorage.ts throws a

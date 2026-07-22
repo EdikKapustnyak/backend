@@ -1,7 +1,13 @@
-import type { FilterQuery } from 'mongoose';
+import { Types, type FilterQuery } from 'mongoose';
 import { ReceiptModel, type ReceiptDocument } from './receipt.model.js';
-import type { ReceiptDocumentShape, ReceiptType } from './receipt.types.js';
+import { ReceiptType, type ReceiptDocumentShape } from './receipt.types.js';
 import type { PaginationParams } from '../../utils/pagination.js';
+
+export interface RevenueByDay {
+  /** Calendar day in YYYY-MM-DD form (UTC), one entry per day that has at least one revenue receipt. */
+  date: string;
+  amount: number;
+}
 
 interface CreateReceiptInput {
   companyId: string;
@@ -95,5 +101,33 @@ export const receiptRepository = {
       { $set: { isActive } },
       { new: true },
     ).exec();
+  },
+
+  /**
+   * Manually-entered daily revenue (Receipt.type = 'daily_revenue'), grouped
+   * by calendar day. Soft-deleted receipts and entries with no amount are
+   * excluded. Mirrors writeOffRepository's getWasteByProduct/getWasteByReason
+   * aggregation pattern.
+   */
+  async getRevenueByDay(companyId: string, from: Date, to: Date): Promise<RevenueByDay[]> {
+    return ReceiptModel.aggregate<RevenueByDay>([
+      {
+        $match: {
+          companyId: new Types.ObjectId(companyId),
+          type: ReceiptType.DAILY_REVENUE,
+          isActive: true,
+          amount: { $ne: null },
+          date: { $gte: from, $lte: to },
+        },
+      },
+      {
+        $group: {
+          _id: { $dateToString: { format: '%Y-%m-%d', date: '$date' } },
+          amount: { $sum: '$amount' },
+        },
+      },
+      { $sort: { _id: 1 } },
+      { $project: { _id: 0, date: '$_id', amount: 1 } },
+    ]).exec();
   },
 };

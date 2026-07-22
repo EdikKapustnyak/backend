@@ -33,24 +33,40 @@ function getClient(): Anthropic {
 const MODEL = 'claude-sonnet-5';
 const WEB_SEARCH_TOOL = { type: 'web_search_20250305', name: 'web_search' } as const;
 
+/** Media types Claude's vision API accepts for an image content block. */
+export type ImageMediaType = 'image/jpeg' | 'image/png' | 'image/webp' | 'image/gif';
+
 export interface AskClaudeOptions {
   maxTokens?: number;
   enableWebSearch?: boolean;
+  /** Attaches an image alongside the text prompt (e.g. receipt.service.ts's OCR extraction) - base64-encoded, no data: URL prefix. */
+  image?: { base64: string; mediaType: ImageMediaType };
 }
 
 export const anthropicClient = {
   /**
-   * Sends a single-turn prompt and returns the concatenated text of the
-   * response. When web search is enabled, the response may interleave text
-   * and tool-use/tool-result blocks - only the text blocks are joined here.
+   * Sends a single-turn prompt (optionally with an attached image) and
+   * returns the concatenated text of the response. When web search is
+   * enabled, the response may interleave text and tool-use/tool-result
+   * blocks - only the text blocks are joined here.
    */
   async askClaude(prompt: string, options: AskClaudeOptions = {}): Promise<string> {
     const anthropic = getClient();
 
+    const content: Anthropic.MessageParam['content'] = options.image
+      ? [
+          {
+            type: 'image',
+            source: { type: 'base64', media_type: options.image.mediaType, data: options.image.base64 },
+          },
+          { type: 'text', text: prompt },
+        ]
+      : prompt;
+
     const response = await anthropic.messages.create({
       model: MODEL,
       max_tokens: options.maxTokens ?? 1500,
-      messages: [{ role: 'user', content: prompt }],
+      messages: [{ role: 'user', content }],
       // The SDK's bundled `tools` type models only custom client-side tools
       // (which require an `input_schema`); server-side tools like
       // web_search don't have one, so TS rejects the object shape

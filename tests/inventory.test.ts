@@ -296,3 +296,110 @@ describe('GET /api/v1/inventory filtering', () => {
     expect(res.body.data.items[0].warehouseId).toBe(warehouseA);
   });
 });
+
+describe('GET /api/v1/inventory/value', () => {
+  it('returns zero for a company with no stock records', async () => {
+    const { token } = await registerCompany('owner-val1@inv.test', 'Inv Val Co 1');
+
+    const res = await request(app)
+      .get('/api/v1/inventory/value')
+      .set('Authorization', `Bearer ${token}`);
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(res.body.data).toEqual({ totalValue: 0, totalQuantity: 0 });
+  });
+
+  it('values stock at purchase price (quantity × purchasePrice), not sale price', async () => {
+    const { token } = await registerCompany('owner-val2@inv.test', 'Inv Val Co 2');
+    const warehouseId = await createWarehouse(token, 'Main');
+    // createProduct sets purchasePrice: 10, salePrice: 20 - value must use 10, not 20.
+    const productId = await createProduct(token, 'SKU-VAL-1');
+
+    await request(app)
+      .post('/api/v1/inventory')
+      .set('Authorization', `Bearer ${token}`)
+      .send({ productId, warehouseId, quantity: 5 });
+
+    const res = await request(app)
+      .get('/api/v1/inventory/value')
+      .set('Authorization', `Bearer ${token}`);
+
+    expect(res.body.data).toEqual({ totalValue: 50, totalQuantity: 5 });
+  });
+
+  it('sums across multiple products and warehouses', async () => {
+    const { token: ownerToken, companyId } = await registerCompany('owner-val3b@inv.test', 'Inv Val Co 3b');
+    await upgradeToEnterprisePlan(companyId);
+
+    const warehouseA = await createWarehouse(ownerToken, 'Warehouse A');
+    const warehouseB = await createWarehouse(ownerToken, 'Warehouse B');
+    const productA = await createProduct(ownerToken, 'SKU-VAL-A'); // purchasePrice 10
+    const productB = await createProduct(ownerToken, 'SKU-VAL-B'); // purchasePrice 10
+
+    await request(app)
+      .post('/api/v1/inventory')
+      .set('Authorization', `Bearer ${ownerToken}`)
+      .send({ productId: productA, warehouseId: warehouseA, quantity: 3 }); // 30
+    await request(app)
+      .post('/api/v1/inventory')
+      .set('Authorization', `Bearer ${ownerToken}`)
+      .send({ productId: productB, warehouseId: warehouseB, quantity: 4 }); // 40
+
+    const res = await request(app)
+      .get('/api/v1/inventory/value')
+      .set('Authorization', `Bearer ${ownerToken}`);
+
+    expect(res.body.data).toEqual({ totalValue: 70, totalQuantity: 7 });
+  });
+
+  it('counts reserved units toward the total too (still owned, just earmarked)', async () => {
+    const { token } = await registerCompany('owner-val4@inv.test', 'Inv Val Co 4');
+    const warehouseId = await createWarehouse(token, 'Main');
+    const productId = await createProduct(token, 'SKU-VAL-4');
+
+    const created = await request(app)
+      .post('/api/v1/inventory')
+      .set('Authorization', `Bearer ${token}`)
+      .send({ productId, warehouseId, quantity: 10 });
+
+    await request(app)
+      .patch(`/api/v1/inventory/${created.body.data.id}/adjust`)
+      .set('Authorization', `Bearer ${token}`)
+      .send({ reservedDelta: 4 }); // reserve 4 of the 10 - quantity itself is unaffected
+
+    const res = await request(app)
+      .get('/api/v1/inventory/value')
+      .set('Authorization', `Bearer ${token}`);
+
+    expect(res.body.data).toEqual({ totalValue: 100, totalQuantity: 10 });
+  });
+
+  it('is tenant-isolated - another company\'s stock never bleeds into the total', async () => {
+    const { token: tokenA } = await registerCompany('owner-val5a@inv.test', 'Inv Val Co 5a');
+    const { token: tokenB } = await registerCompany('owner-val5b@inv.test', 'Inv Val Co 5b');
+
+    const warehouseB = await createWarehouse(tokenB, 'B Warehouse');
+    const productB = await createProduct(tokenB, 'SKU-VAL-B5');
+    await request(app)
+      .post('/api/v1/inventory')
+      .set('Authorization', `Bearer ${tokenB}`)
+      .send({ productId: productB, warehouseId: warehouseB, quantity: 100 });
+
+    const res = await request(app)
+      .get('/api/v1/inventory/value')
+      .set('Authorization', `Bearer ${tokenA}`);
+
+    expect(res.body.data).toEqual({ totalValue: 0, totalQuantity: 0 });
+  });
+
+  it('is readable by an employee (read-only, same as GET /inventory)', async () => {
+    const { token: ownerToken } = await registerCompany('owner-val6@inv.test', 'Inv Val Co 6');
+    const employeeToken = await inviteEmployee(ownerToken, 'employee-val6@inv.test');
+
+    const res = await request(app)
+      .get('/api/v1/inventory/value')
+      .set('Authorization', `Bearer ${employeeToken}`);
+
+    expect(res.status).toBe(200);
+  });
+});

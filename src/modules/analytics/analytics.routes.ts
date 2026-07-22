@@ -26,3 +26,11 @@ analyticsRouter.get(
   validate({ query: wasteAnalyticsQuerySchema }),
   analyticsController.wasteAnalyticsNarrative,
 );
+
+// Deterministic aggregation over manually-entered daily revenue receipts
+// (Receipt.type = 'daily_revenue') - same shape/pattern as /waste above.
+analyticsRouter.get(
+  '/revenue',
+  validate({ query: wasteAnalyticsQuerySchema }),
+  analyticsController.revenueAnalytics,
+);

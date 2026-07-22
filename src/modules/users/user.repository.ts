@@ -1,5 +1,5 @@
 import { UserModel, type UserDocument } from './user.model.js';
-import type { Role } from './user.types.js';
+import { Role } from './user.types.js';
 
 interface CreateUserInput {
   companyId: string;
@@ -76,5 +76,20 @@ export const userRepository = {
 
   async countInCompany(companyId: string): Promise<number> {
     return UserModel.countDocuments({ companyId }).exec();
+  },
+
+  /**
+   * Active owner/admin users' name+email, for notification emails
+   * (notification.service.ts) - deliberately not "everyone", since
+   * employees/managers typically aren't the ones acting on a low-stock or
+   * discrepancy alert. Projected to just what the caller needs.
+   */
+  async findAdminRecipientsInCompany(companyId: string): Promise<{ name: string; email: string }[]> {
+    return UserModel.find(
+      { companyId, isActive: true, role: { $in: [Role.OWNER, Role.ADMIN] } },
+      { name: 1, email: 1, _id: 0 },
+    )
+      .lean()
+      .exec();
   },
 };

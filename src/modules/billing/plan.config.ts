@@ -47,16 +47,16 @@ export const BILLING_PERIODS: readonly BillingPeriodMonths[] = [1, 3, 6, 12];
 
 /**
  * Base price per calendar month, in the smallest unit of STRIPE_CURRENCY
- * (e.g. cents for USD). Illustrative, from ADR-0001 - a pricing decision,
- * not an engineering one. Basic isn't sold through checkout (see
- * billing.schema.ts) - every new company gets it by default, free, with
- * no Stripe subscription at all - but it keeps a price here in case that
- * changes later.
+ * (e.g. cents for USD). Confirmed business decision - matches the public
+ * landing page pricing (frontend/src/features/landing/components/LandingPricing.tsx).
+ * Basic isn't sold through checkout (see billing.schema.ts) - every new
+ * company gets it by default, free, with no Stripe subscription at all -
+ * but it keeps a price here in case that changes later.
  */
 export const PLAN_MONTHLY_PRICE: Record<SubscriptionPlan, number> = {
-  [SubscriptionPlan.BASIC]: 1900,
-  [SubscriptionPlan.BUSINESS]: 4900,
-  [SubscriptionPlan.ENTERPRISE]: 14900,
+  [SubscriptionPlan.BASIC]: 2900,
+  [SubscriptionPlan.BUSINESS]: 7900,
+  [SubscriptionPlan.ENTERPRISE]: 19900,
 };
 
 /** Discount applied to the total when paying for multiple months upfront. Illustrative - see ADR-0001. */

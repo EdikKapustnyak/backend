@@ -4,6 +4,63 @@ import type { PublicNotification } from './notification.types.js';
 import { notificationRepository } from './notification.repository.js';
 import { productRepository } from '../products/product.repository.js';
 import { companyRepository } from '../companies/company.repository.js';
+import { userRepository } from '../users/user.repository.js';
+import { mailer, isMailerConfigured } from '../../utils/mailer.js';
+import { escapeHtml } from '../../utils/escapeHtml.js';
+import { logger } from '../../utils/logger.js';
+import { env } from '../../config/env.js';
+
+function buildNotificationEmailHtml(params: { message: string; notificationsUrl: string }): string {
+  const message = escapeHtml(params.message);
+  const url = escapeHtml(params.notificationsUrl);
+
+  // Same deliberately plain, table-free HTML as buildInviteEmailHtml in
+  // user.service.ts - no template dependency for two transactional emails.
+  return `
+    <p>${message}</p>
+    <p><a href="${url}">View in Axis Digital</a></p>
+  `.trim();
+}
+
+/**
+ * Emails the company's owner/admin users about a notification, on top of
+ * the in-app notification (which always gets created regardless of email
+ * delivery - see checkLowStock/flagDiscrepancyIfLarge below). Mirrors
+ * user.service.ts's invite-email philosophy: never throws, degrades
+ * silently if RESEND_API_KEY/MAIL_FROM aren't set - see mailer.ts.
+ *
+ * Deliberately fire-and-forget (`void`, never awaited) at every call site:
+ * checkLowStock/flagDiscrepancyIfLarge run inside the caller's own
+ * transaction (Purchases/Write-offs/Inventory-adjust/Inventarization), and
+ * an external HTTP call to Resend has no business adding latency - or a
+ * failure mode - to that transaction's commit. Accepted trade-off: if the
+ * enclosing transaction later aborts for an unrelated reason, an email can
+ * still go out for a notification that ends up not persisted. No outbox
+ * pattern here for a single email send: not worth the complexity yet.
+ */
+async function notifyAdminsByEmail(companyId: string, subject: string, message: string): Promise<void> {
+  if (!isMailerConfigured()) return;
+
+  try {
+    const recipients = await userRepository.findAdminRecipientsInCompany(companyId);
+    if (recipients.length === 0) return;
+
+    const html = buildNotificationEmailHtml({
+      message,
+      notificationsUrl: `${env.FRONTEND_URL}/notifications`,
+    });
+
+    await Promise.all(
+      recipients.map((r) =>
+        mailer.sendMail({ to: r.email, subject, html }).catch((err: unknown) => {
+          logger.error({ err, email: r.email, companyId }, 'Failed to send notification email');
+        }),
+      ),
+    );
+  } catch (err) {
+    logger.error({ err, companyId }, 'Failed to look up notification email recipients');
+  }
+}
 
 export function toPublicNotification(notification: NotificationDocument): PublicNotification {
   return {
@@ -51,7 +108,7 @@ export async function checkLowStock(
 
   if (currentQuantity <= product.minStockLevel) {
     const message = `${product.name}: осталось ${currentQuantity} шт (мин. остаток: ${product.minStockLevel})`;
-    await notificationRepository.upsertOpenLowStock(
+    const notification = await notificationRepository.upsertOpenLowStock(
       companyId,
       productId,
       warehouseId,
@@ -60,6 +117,17 @@ export async function checkLowStock(
       message,
       session,
     );
+
+    // findOneAndUpdate's upsert result doesn't directly say "was this an
+    // insert" - Mongoose's timestamps plugin sets createdAt === updatedAt
+    // only on the initial insert, so this comparison is the simplest
+    // reliable signal without a second query or a rawResult option.
+    // Without this check, every stock-changing operation while a product
+    // stays below threshold would re-email the same alert.
+    const isNewlyOpened = notification.createdAt.getTime() === notification.updatedAt.getTime();
+    if (isNewlyOpened) {
+      void notifyAdminsByEmail(companyId, `Low stock: ${product.name}`, message);
+    }
   } else {
     await notificationRepository.resolveOpenLowStock(companyId, productId, warehouseId, session);
   }
@@ -132,4 +200,6 @@ export async function flagDiscrepancyIfLarge(
     },
     session,
   );
+
+  void notifyAdminsByEmail(companyId, `Large discrepancy: ${productName}`, message);
 }

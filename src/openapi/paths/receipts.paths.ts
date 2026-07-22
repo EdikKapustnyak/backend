@@ -7,9 +7,9 @@ import {
   notFoundResponse,
   validationErrorResponse,
 } from '../registry.js';
-import { updateReceiptSchema, listReceiptsQuerySchema } from '../../modules/receipts/receipt.schema.js';
+import { requestUploadUrlSchema, confirmUploadSchema, updateReceiptSchema, listReceiptsQuerySchema } from '../../modules/receipts/receipt.schema.js';
 import { ReceiptType } from '../../modules/receipts/receipt.types.js';
-import { publicReceiptSchema } from '../responseSchemas.js';
+import { publicReceiptSchema, receiptOcrResultResponseSchema } from '../responseSchemas.js';
 
 const TAG = 'Receipts';
 const idParam = { params: z.object({ id: z.string().openapi({ description: 'Receipt id' }) }) };
@@ -44,6 +44,25 @@ registry.registerPath({
 
 registry.registerPath({
   method: 'post',
+  path: '/receipts/{id}/ocr',
+  tags: [TAG],
+  summary: 'Extract amount/date/category from a receipt photo via OCR (Claude vision)',
+  description:
+    'Read-only suggestion - never modifies the receipt itself. Apply the result via PATCH /receipts/{id} if it looks right. Image receipts only (JPEG/PNG/WEBP) - PDF receipts return 400. Available on every plan, like the other AI features.',
+  request: idParam,
+  responses: {
+    200: {
+      description: 'Extracted fields (any of which may be null if unreadable)',
+      content: { 'application/json': { schema: successResponse(receiptOcrResultResponseSchema) } },
+    },
+    400: { description: 'Unsupported file type for OCR (e.g. PDF)' },
+    404: notFoundResponse,
+    ...commonErrorResponses,
+  },
+});
+
+registry.registerPath({
+  method: 'post',
   path: '/receipts',
   tags: [TAG],
   summary: 'Upload a receipt photo',
@@ -65,6 +84,43 @@ registry.registerPath({
       },
     },
   },
+  responses: {
+    201: { description: 'Uploaded', content: { 'application/json': { schema: successResponse(publicReceiptSchema) } } },
+    422: validationErrorResponse,
+    ...commonErrorResponses,
+  },
+});
+
+registry.registerPath({
+  method: 'post',
+  path: '/receipts/upload-url',
+  tags: [TAG],
+  summary: 'Step 1/2 - get a signed URL to upload a receipt file directly to R2',
+  description:
+    'Any authenticated tenant member - including employee. Returns a short-lived signed PUT URL - upload the file straight to it (matching Content-Type), then call POST /receipts/confirm with the returned fileKey. The file never passes through this API server. Same allowed types as the multipart endpoint above (JPEG/PNG/WEBP/PDF, 10MB max).',
+  request: { body: { content: { 'application/json': { schema: requestUploadUrlSchema } } } },
+  responses: {
+    200: {
+      description: 'Signed upload URL',
+      content: {
+        'application/json': {
+          schema: successResponse(z.object({ uploadUrl: z.string(), fileKey: z.string() })),
+        },
+      },
+    },
+    422: validationErrorResponse,
+    ...commonErrorResponses,
+  },
+});
+
+registry.registerPath({
+  method: 'post',
+  path: '/receipts/confirm',
+  tags: [TAG],
+  summary: 'Step 2/2 - create the receipt record after uploading to the signed URL',
+  description:
+    'Re-verifies the file actually exists at fileKey (and reads its real size/type back from R2) before creating anything - a signed PUT URL only grants permission to upload, it does not prove the client used it.',
+  request: { body: { content: { 'application/json': { schema: confirmUploadSchema } } } },
   responses: {
     201: { description: 'Uploaded', content: { 'application/json': { schema: successResponse(publicReceiptSchema) } } },
     422: validationErrorResponse,

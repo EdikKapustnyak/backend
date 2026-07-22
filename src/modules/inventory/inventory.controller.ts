@@ -94,3 +94,11 @@ export const adjustInventory = ctrlWrapper(async (req: Request, res: Response) =
 
   sendSuccess(res, result, 'Inventory adjusted');
 });
+
+/** Total value of stock currently on hand, valued at cost - see inventoryRepository.getStockValueSummary for the exact reasoning. Used by the dashboard's "stock value" KPI. */
+export const getStockValue = ctrlWrapper(async (req: Request, res: Response) => {
+  if (!req.auth) throw new UnauthorizedError();
+
+  const summary = await inventoryRepository.getStockValueSummary(req.auth.companyId);
+  sendSuccess(res, summary);
+});

@@ -1,5 +1,6 @@
 import { CompanyModel, type CompanyDocument } from './company.model.js';
-import type { CompanyStatus, SubscriptionPlan } from './company.types.js';
+import { CompanyStatus } from './company.types.js';
+import type { SubscriptionPlan } from './company.types.js';
 
 interface CreateCompanyInput {
   name: string;
@@ -68,5 +69,22 @@ export const companyRepository = {
     input: UpdateSubscriptionStateInput,
   ): Promise<CompanyDocument | null> {
     return CompanyModel.findByIdAndUpdate(id, { $set: input }, { new: true }).exec();
+  },
+
+  /**
+   * Bulk PAST_DUE -> SUSPENDED for every company whose grace period ended
+   * at or before `cutoff` (i.e. pastDueSince + GRACE_PERIOD_DAYS <= now).
+   * Used by jobs/gracePeriodSweep.ts - the proactive companion to
+   * billing.service.ts's per-request lazy escalation, for companies that
+   * stop making requests entirely during their grace period. One
+   * updateMany rather than find-then-loop, since this can touch many
+   * companies per run.
+   */
+  async suspendExpiredGracePeriods(cutoff: Date): Promise<number> {
+    const result = await CompanyModel.updateMany(
+      { status: CompanyStatus.PAST_DUE, pastDueSince: { $lte: cutoff } },
+      { $set: { status: CompanyStatus.SUSPENDED } },
+    ).exec();
+    return result.modifiedCount;
   },
 };

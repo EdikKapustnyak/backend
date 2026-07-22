@@ -471,18 +471,26 @@ versioned API resource).
     /notifications/:id/resolve` lets any authenticated tenant member
     (including `employee`) manually dismiss an open notification of either
     type.
-17. **PDF reports embed a bundled Cyrillic font.** Standard PDF fonts
-    (Helvetica, Times, Courier) have no Cyrillic glyphs — since product
-    names, write-off reasons, etc. are in Russian, `report.pdf.ts` embeds
-    **DejaVu Sans** (Regular + Bold) from `assets/fonts/` at the project
-    root (sibling to `src/` and `dist/`, referenced via a path computed
-    from `import.meta.url` so it resolves the same way in dev and in the
-    compiled build — see the comment at the top of that file). DejaVu Sans
-    ships under a permissive free license (embedding/redistribution
-    allowed, including commercially) and is already included in this
-    delivery under `assets/fonts/`. **If you move or restructure the
-    project, keep `assets/` as a sibling of `src/`/`dist/`, or update the
-    relative path in `report.pdf.ts`.**
+17. **All three PDF reports render via Puppeteer (headless Chrome), not
+    pdfkit.** `report.html.ts` builds a self-contained HTML document per
+    report (real CSS layout, not pdfkit's manual x/y text positioning) and
+    hands it to `utils/htmlToPdf.ts`, which renders it to a PDF buffer via
+    a single shared headless Chrome instance (launched lazily, reused for
+    the process lifetime, closed on graceful shutdown in `server.ts`).
+    Requires a working Chromium install in whatever environment runs this
+    in production (see puppeteer's own install docs for current
+    OS-package requirements - these shift across Chromium versions, so
+    they're not duplicated here).
+    **Cyrillic font, same as before, different mechanism**: standard fonts
+    have no Cyrillic glyphs, and a minimal Docker image's Chrome has no
+    guaranteed Cyrillic-capable system font either — so `report.html.ts`
+    embeds **DejaVu Sans** (Regular + Bold) from `assets/fonts/` directly
+    into each report's HTML as a base64 `@font-face`, read once at module
+    load. Same font files, same license, same `assets/` sibling-of-`src/`
+    layout requirement as before — just embedded via CSS instead of
+    pdfkit's `registerFont`. **If you move or restructure the project,
+    keep `assets/` as a sibling of `src/`/`dist/`, or update the relative
+    path in `report.html.ts`.**
     Reports have no persistence of their own — `GET /reports/*/pdf` queries
     `Purchase`/`WriteOff`/`Inventarization` directly (capped at 2,000 records
     per report, `REPORT_MAX_RECORDS` in each repository) and resolves

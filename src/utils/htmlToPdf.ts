@@ -2,15 +2,13 @@ import puppeteer, { type Browser } from 'puppeteer';
 import { logger } from './logger.js';
 
 /**
- * HTML-to-PDF engine (via headless Chrome / Puppeteer), as an alternative
- * to pdfkit for reports that need real CSS layout - logos, multi-column
- * designs, charts, precise typography - rather than pdfkit's manual
- * text/table positioning (see src/modules/reports/report.pdf.ts for that
- * approach, currently used by the Purchases and Write-offs reports).
- *
- * Not wired into any endpoint yet - this is infrastructure for a future
- * report. See README "PDF reports" for the tradeoffs between this and
- * pdfkit, and what's needed to deploy this in Docker.
+ * HTML-to-PDF engine (via headless Chrome / Puppeteer) - used by
+ * report.html.ts for all three reports (Purchases, Write-offs,
+ * Inventarizations), which need real CSS layout rather than pdfkit's
+ * manual text/table positioning. See README "PDF reports" for what's
+ * needed to deploy this in Docker (a Chromium build with its usual
+ * runtime library dependencies - see puppeteer's own install docs for the
+ * current list, since it changes across Chromium versions).
  */
 
 let browserPromise: Promise<Browser> | null = null;
@@ -69,6 +67,13 @@ export async function renderHtmlToPdf(
   const page = await browser.newPage();
 
   try {
+    // Defense-in-depth: this HTML embeds user-entered strings (supplier/
+    // product names, notes, etc.) - every caller is expected to escape
+    // them (see utils/escapeHtml.ts), but since this runs in a real
+    // headless Chrome, disabling script execution outright means a missed
+    // escape can't turn into actual code execution inside the page,
+    // rather than relying on escaping alone.
+    await page.setJavaScriptEnabled(false);
     await page.setContent(html, { waitUntil: 'networkidle0' });
     const pdfBytes = await page.pdf({
       format: options.format ?? 'A4',

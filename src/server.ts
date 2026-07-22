@@ -3,6 +3,7 @@ import { env } from './config/env.js';
 import { connectDatabase, disconnectDatabase } from './config/db.js';
 import { closeHtmlToPdfEngine } from './utils/htmlToPdf.js';
 import { logger } from './utils/logger.js';
+import { startGracePeriodSweep } from './jobs/gracePeriodSweep.js';
 
 async function main(): Promise<void> {
   await connectDatabase();
@@ -13,8 +14,11 @@ async function main(): Promise<void> {
     logger.info(`Server listening on port ${env.PORT} [${env.NODE_ENV}]`);
   });
 
+  const stopGracePeriodSweep = startGracePeriodSweep(env.GRACE_PERIOD_SWEEP_INTERVAL_MS);
+
   const shutdown = async (signal: string): Promise<void> => {
     logger.info(`Received ${signal}, shutting down gracefully...`);
+    stopGracePeriodSweep();
     server.close(async () => {
       await closeHtmlToPdfEngine();
       await disconnectDatabase();

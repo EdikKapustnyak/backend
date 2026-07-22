@@ -12,6 +12,7 @@ import { inventarizationRouter } from '../modules/inventarizations/inventarizati
 import { notificationRouter } from '../modules/notifications/notification.routes.js';
 import { reportRouter } from '../modules/reports/report.routes.js';
 import { receiptRouter } from '../modules/receipts/receipt.routes.js';
+import { importRouter } from '../modules/imports/import.routes.js';
 import { companyRouter } from '../modules/companies/company.routes.js';
 import { analyticsRouter } from '../modules/analytics/analytics.routes.js';
 import { localEventRouter } from '../modules/local-events/local-event.routes.js';
@@ -36,3 +37,4 @@ apiRouter.use('/inventarizations', inventarizationRouter);
 apiRouter.use('/notifications', notificationRouter);
 apiRouter.use('/reports', reportRouter);
 apiRouter.use('/receipts', receiptRouter);
+apiRouter.use('/import', importRouter);

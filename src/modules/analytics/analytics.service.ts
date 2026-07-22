@@ -1,6 +1,7 @@
 import { writeOffRepository, type WasteByProduct, type WasteByReason } from '../write-offs/write-off.repository.js';
 import { purchaseRepository } from '../purchases/purchase.repository.js';
 import { companyRepository } from '../companies/company.repository.js';
+import { receiptRepository, type RevenueByDay } from '../receipts/receipt.repository.js';
 import { WRITE_OFF_REASON_LABELS } from '../write-offs/write-off.labels.js';
 import { anthropicClient } from '../../utils/anthropicClient.js';
 
@@ -68,6 +69,48 @@ export async function getWasteAnalytics(
     wasteRatioPercent,
     byProduct,
     byReason,
+  };
+}
+
+export interface RevenueAnalyticsSummary {
+  from: Date;
+  to: Date;
+  totalRevenue: number;
+  daysWithData: number;
+  /** totalRevenue / number of calendar days in [from, to] - not just daysWithData, so gaps (no entry logged) pull the average down rather than being silently skipped. */
+  averageDailyRevenue: number;
+  byDay: RevenueByDay[];
+}
+
+/**
+ * Deterministic aggregation over manually-entered daily revenue receipts
+ * (Receipt.type = 'daily_revenue') - same pattern as getWasteAnalytics:
+ * pure MongoDB aggregation, no AI, reuses the company's configurable
+ * default lookback window.
+ */
+export async function getRevenueAnalytics(
+  companyId: string,
+  from?: Date,
+  to?: Date,
+): Promise<RevenueAnalyticsSummary> {
+  const rangeTo = to ?? new Date();
+  const rangeFrom = from ?? (await computeDefaultRangeFrom(companyId, rangeTo));
+
+  const byDay = await receiptRepository.getRevenueByDay(companyId, rangeFrom, rangeTo);
+
+  const totalRevenue = byDay.reduce((sum, entry) => sum + entry.amount, 0);
+  const totalDaysInRange = Math.max(
+    1,
+    Math.ceil((rangeTo.getTime() - rangeFrom.getTime()) / (24 * 60 * 60 * 1000)),
+  );
+
+  return {
+    from: rangeFrom,
+    to: rangeTo,
+    totalRevenue,
+    daysWithData: byDay.length,
+    averageDailyRevenue: totalRevenue / totalDaysInRange,
+    byDay,
   };
 }
 

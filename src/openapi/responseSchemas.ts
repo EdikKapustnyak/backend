@@ -11,6 +11,7 @@ import {
   StockMovementReferenceType,
 } from '../modules/stock-movements/stock-movement.types.js';
 import { ReceiptType } from '../modules/receipts/receipt.types.js';
+import { receiptOcrResultSchema } from '../modules/receipts/receipt.schema.js';
 
 // A date field is always an ISO 8601 string on the wire (JSON has no native
 // date type) - documented as a plain string rather than z.date() so the
@@ -294,6 +295,11 @@ export const publicReceiptSchema = registry.register(
   }),
 );
 
+// Same schema instance receipt.service.ts validates Claude's raw OCR JSON
+// against - registered here (not redefined) so the OpenAPI doc can never
+// silently drift from what's actually enforced at runtime.
+export const receiptOcrResultResponseSchema = registry.register('ReceiptOcrResult', receiptOcrResultSchema);
+
 const wasteByProductSchema = z.object({
   productId: objectId,
   productName: z.string(),
@@ -325,6 +331,23 @@ export const wasteAnalyticsNarrativeSchema = registry.register(
   'WasteAnalyticsWithNarrative',
   wasteAnalyticsSchema.extend({
     narrative: z.string().openapi({ description: 'AI-written analysis + recommendations over the numbers above' }),
+  }),
+);
+
+const revenueByDaySchema = z.object({
+  date: z.string().openapi({ description: 'Calendar day, YYYY-MM-DD (UTC)' }),
+  amount: z.number(),
+});
+
+export const revenueAnalyticsSchema = registry.register(
+  'RevenueAnalytics',
+  z.object({
+    from: isoDate,
+    to: isoDate,
+    totalRevenue: z.number(),
+    daysWithData: z.number().openapi({ description: 'Number of calendar days with at least one revenue receipt logged' }),
+    averageDailyRevenue: z.number().openapi({ description: 'totalRevenue divided by the full number of days in range, not just daysWithData' }),
+    byDay: z.array(revenueByDaySchema),
   }),
 );
 

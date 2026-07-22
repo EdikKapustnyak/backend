@@ -25,6 +25,10 @@ inventoryRouter.get(
   inventoryController.listInventory,
 );
 
+// Must come before /:id - otherwise Express would try to match "value" as
+// an :id param and isValidId() would reject it as a malformed ObjectId.
+inventoryRouter.get('/value', inventoryController.getStockValue);
+
 inventoryRouter.get('/:id', isValidId(), inventoryController.getInventory);
 
 inventoryRouter.post(

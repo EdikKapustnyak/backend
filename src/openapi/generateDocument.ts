@@ -20,6 +20,7 @@ import './paths/inventarizations.paths.js';
 import './paths/notifications.paths.js';
 import './paths/reports.paths.js';
 import './paths/receipts.paths.js';
+import './paths/import.paths.js';
 import './paths/analytics.paths.js';
 import './paths/local-events.paths.js';
 

@@ -3,6 +3,7 @@ import request from 'supertest';
 import { Types } from 'mongoose';
 import { createApp } from '../src/app.js';
 import { anthropicClient } from '../src/utils/anthropicClient.js';
+import { objectStorage } from '../src/utils/objectStorage.js';
 import { WriteOffModel } from '../src/modules/write-offs/write-off.model.js';
 
 const app = createApp();
@@ -10,13 +11,24 @@ const strongPassword = 'Sup3rSecret!';
 const FAKE_NARRATIVE = 'Тестовый анализ и рекомендации.';
 
 let askClaudeSpy: ReturnType<typeof vi.spyOn>;
+let uploadSpy: ReturnType<typeof vi.spyOn>;
+let presignSpy: ReturnType<typeof vi.spyOn>;
 
 beforeEach(() => {
   askClaudeSpy = vi.spyOn(anthropicClient, 'askClaude').mockResolvedValue(FAKE_NARRATIVE);
+  uploadSpy = vi.spyOn(objectStorage, 'uploadObject').mockResolvedValue(undefined);
+  // toPublicReceipt() (called after every receipt create/update) needs a
+  // presigned view URL - without this mock, receipt creation in the revenue
+  // analytics tests below 500s trying to reach real R2 with no credentials.
+  presignSpy = vi
+    .spyOn(objectStorage, 'getPresignedDownloadUrl')
+    .mockResolvedValue('https://fake-bucket.example.test/signed-url?sig=abc');
 });
 
 afterEach(() => {
   askClaudeSpy.mockRestore();
+  uploadSpy.mockRestore();
+  presignSpy.mockRestore();
 });
 
 async function registerCompany(email: string, companyName: string): Promise<string> {
@@ -73,6 +85,16 @@ async function confirmedWriteOff(
     .post(`/api/v1/write-offs/${draft.body.data.id}/confirm`)
     .set('Authorization', `Bearer ${token}`);
   return draft.body.data.id as string;
+}
+
+async function createRevenueReceipt(token: string, amount: number, date: string): Promise<void> {
+  await request(app)
+    .post('/api/v1/receipts')
+    .set('Authorization', `Bearer ${token}`)
+    .field('type', 'daily_revenue')
+    .field('amount', String(amount))
+    .field('date', date)
+    .attach('file', Buffer.from('fake jpeg bytes'), { filename: 'receipt.jpg', contentType: 'image/jpeg' });
 }
 
 describe('GET /api/v1/analytics/waste', () => {
@@ -195,6 +217,92 @@ describe('GET /api/v1/analytics/waste/narrative', () => {
   });
 });
 
+describe('GET /api/v1/analytics/revenue', () => {
+  it('sums daily revenue receipts grouped by day', async () => {
+    const token = await registerCompany('owner1@rev.test', 'REV Co 1');
+    await createRevenueReceipt(token, 1000, '2026-01-10');
+    await createRevenueReceipt(token, 500, '2026-01-10');
+    await createRevenueReceipt(token, 250.5, '2026-01-11');
+
+    const res = await request(app)
+      .get('/api/v1/analytics/revenue?from=2026-01-01&to=2026-01-31')
+      .set('Authorization', `Bearer ${token}`);
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(res.body.data.totalRevenue).toBe(1750.5);
+    expect(res.body.data.byDay).toHaveLength(2);
+    expect(res.body.data.byDay[0]).toEqual({ date: '2026-01-10', amount: 1500 });
+    expect(res.body.data.byDay[1]).toEqual({ date: '2026-01-11', amount: 250.5 });
+    expect(res.body.data.daysWithData).toBe(2);
+  });
+
+  it('excludes receipts of other types and soft-deleted revenue receipts', async () => {
+    const token = await registerCompany('owner2@rev.test', 'REV Co 2');
+    await createRevenueReceipt(token, 1000, '2026-01-10');
+    await request(app)
+      .post('/api/v1/receipts')
+      .set('Authorization', `Bearer ${token}`)
+      .field('type', 'expense')
+      .field('amount', '9999')
+      .attach('file', Buffer.from('fake'), { filename: 'r.jpg', contentType: 'image/jpeg' });
+
+    const deletedReceipt = await request(app)
+      .post('/api/v1/receipts')
+      .set('Authorization', `Bearer ${token}`)
+      .field('type', 'daily_revenue')
+      .field('amount', '4242')
+      .field('date', '2026-01-12')
+      .attach('file', Buffer.from('fake'), { filename: 'r2.jpg', contentType: 'image/jpeg' });
+    await request(app)
+      .delete(`/api/v1/receipts/${deletedReceipt.body.data.id}`)
+      .set('Authorization', `Bearer ${token}`);
+
+    const res = await request(app)
+      .get('/api/v1/analytics/revenue?from=2026-01-01&to=2026-01-31')
+      .set('Authorization', `Bearer ${token}`);
+
+    expect(res.body.data.totalRevenue).toBe(1000);
+    expect(res.body.data.byDay).toHaveLength(1);
+  });
+
+  it('returns zeros for a company with no revenue receipts', async () => {
+    const token = await registerCompany('owner3@rev.test', 'REV Co 3');
+
+    const res = await request(app)
+      .get('/api/v1/analytics/revenue')
+      .set('Authorization', `Bearer ${token}`);
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(res.body.data.totalRevenue).toBe(0);
+    expect(res.body.data.daysWithData).toBe(0);
+    expect(res.body.data.byDay).toHaveLength(0);
+  });
+
+  it('rejects an invalid date range', async () => {
+    const token = await registerCompany('owner4@rev.test', 'REV Co 4');
+
+    const res = await request(app)
+      .get('/api/v1/analytics/revenue?from=2026-06-01&to=2026-01-01')
+      .set('Authorization', `Bearer ${token}`);
+
+    expect(res.status).toBe(422);
+  });
+});
+
+describe('Multi-tenant isolation for revenue analytics', () => {
+  it('does not include another company revenue receipts', async () => {
+    const tokenA = await registerCompany('ownerA@rev.test', 'REV Co A');
+    const tokenB = await registerCompany('ownerB@rev.test', 'REV Co B');
+    await createRevenueReceipt(tokenA, 1000, '2026-01-10');
+
+    const res = await request(app)
+      .get('/api/v1/analytics/revenue?from=2026-01-01&to=2026-01-31')
+      .set('Authorization', `Bearer ${tokenB}`);
+
+    expect(res.body.data.totalRevenue).toBe(0);
+  });
+});
+
 describe('configurable default lookback (Company.wasteAnalyticsDefaultLookbackDays)', () => {
   it('excludes a write-off older than the default 30-day lookback, but includes it once the company widens the window', async () => {
     const token = await registerCompany('owner7@an.test', 'AN Co 7');
@@ -228,5 +336,26 @@ describe('configurable default lookback (Company.wasteAnalyticsDefaultLookbackDa
       .get('/api/v1/analytics/waste')
       .set('Authorization', `Bearer ${token}`);
     expect(widenedRes.body.data.totalQuantity).toBe(5);
+  });
+
+  it('applies the same configurable lookback to revenue analytics', async () => {
+    const token = await registerCompany('owner8@an.test', 'AN Co 8');
+    const oldDate = new Date(Date.now() - 40 * 24 * 60 * 60 * 1000);
+    await createRevenueReceipt(token, 1000, oldDate.toISOString().slice(0, 10));
+
+    const defaultRes = await request(app)
+      .get('/api/v1/analytics/revenue')
+      .set('Authorization', `Bearer ${token}`);
+    expect(defaultRes.body.data.totalRevenue).toBe(0);
+
+    await request(app)
+      .patch('/api/v1/companies/me')
+      .set('Authorization', `Bearer ${token}`)
+      .send({ wasteAnalyticsDefaultLookbackDays: 60 });
+
+    const widenedRes = await request(app)
+      .get('/api/v1/analytics/revenue')
+      .set('Authorization', `Bearer ${token}`);
+    expect(widenedRes.body.data.totalRevenue).toBe(1000);
   });
 });

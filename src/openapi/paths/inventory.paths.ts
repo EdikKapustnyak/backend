@@ -35,6 +35,26 @@ registry.registerPath({
 
 registry.registerPath({
   method: 'get',
+  path: '/inventory/value',
+  tags: [TAG],
+  summary: 'Total stock value on hand, valued at cost',
+  description:
+    'Sums quantity × purchasePrice across every stock record in the company - used by the dashboard\'s "stock value" KPI. Valued at cost (purchase price), not sale price, and includes reserved units (still owned, just earmarked).',
+  responses: {
+    200: {
+      description: 'Stock value summary',
+      content: {
+        'application/json': {
+          schema: successResponse(z.object({ totalValue: z.number(), totalQuantity: z.number() })),
+        },
+      },
+    },
+    ...commonErrorResponses,
+  },
+});
+
+registry.registerPath({
+  method: 'get',
   path: '/inventory/{id}',
   tags: [TAG],
   summary: 'Get one stock record',

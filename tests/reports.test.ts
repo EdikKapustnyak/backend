@@ -340,3 +340,55 @@ describe('GET /api/v1/reports/inventarizations/pdf', () => {
     expect(res.status).toBe(422);
   });
 });
+
+describe('Report language (lang query param)', () => {
+  it('defaults to a valid PDF when lang is omitted (backward compatible)', async () => {
+    const ownerToken = await registerCompany('owner16@rp.test', 'RP Co 16');
+
+    const res = await request(app)
+      .get('/api/v1/reports/purchases/pdf')
+      .set('Authorization', `Bearer ${ownerToken}`);
+
+    expectValidPdf(res);
+  });
+
+  it('accepts lang=en and generates a valid PDF', async () => {
+    const ownerToken = await registerCompany('owner17@rp.test', 'RP Co 17');
+
+    const res = await request(app)
+      .get('/api/v1/reports/purchases/pdf?lang=en')
+      .set('Authorization', `Bearer ${ownerToken}`);
+
+    expectValidPdf(res);
+  });
+
+  it('accepts lang=no and generates a valid PDF', async () => {
+    const ownerToken = await registerCompany('owner18@rp.test', 'RP Co 18');
+
+    const res = await request(app)
+      .get('/api/v1/reports/write-offs/pdf?lang=no')
+      .set('Authorization', `Bearer ${ownerToken}`);
+
+    expectValidPdf(res);
+  });
+
+  it('accepts lang on the inventarizations report too', async () => {
+    const ownerToken = await registerCompany('owner19@rp.test', 'RP Co 19');
+
+    const res = await request(app)
+      .get('/api/v1/reports/inventarizations/pdf?lang=en')
+      .set('Authorization', `Bearer ${ownerToken}`);
+
+    expectValidPdf(res);
+  });
+
+  it('rejects an unsupported lang value', async () => {
+    const ownerToken = await registerCompany('owner20@rp.test', 'RP Co 20');
+
+    const res = await request(app)
+      .get('/api/v1/reports/purchases/pdf?lang=fr')
+      .set('Authorization', `Bearer ${ownerToken}`);
+
+    expect(res.status).toBe(422);
+  });
+});

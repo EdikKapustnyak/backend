@@ -1,7 +1,13 @@
 import type { ClientSession, FilterQuery } from 'mongoose';
+import { Types } from 'mongoose';
 import { InventoryModel, type InventoryDocument } from './inventory.model.js';
 import type { PaginationParams } from '../../utils/pagination.js';
 import type { InventoryDocumentShape } from './inventory.types.js';
+
+export interface StockValueSummary {
+  totalValue: number;
+  totalQuantity: number;
+}
 
 interface CreateInventoryInput {
   companyId: string;
@@ -141,5 +147,51 @@ export const inventoryRepository = {
       { $inc: { quantity: quantityDelta, reserved: reservedDelta } },
       { new: true, session },
     ).exec();
+  },
+
+  /**
+   * Total value of everything currently on hand, valued at each product's
+   * purchase (cost) price - not sale price, since this represents capital
+   * tied up in stock, not potential revenue. Includes reserved units (still
+   * owned, just earmarked) - only `quantity`, matching standard inventory
+   * valuation practice.
+   *
+   * The $lookup's own pipeline re-matches companyId (not just the outer
+   * $match) so a cross-tenant product id could never join in, even in
+   * theory - defense in depth on top of the outer scoping.
+   */
+  async getStockValueSummary(companyId: string): Promise<StockValueSummary> {
+    const companyObjectId = new Types.ObjectId(companyId);
+    const [result] = await InventoryModel.aggregate<StockValueSummary>([
+      { $match: { companyId: companyObjectId } },
+      {
+        $lookup: {
+          from: 'products',
+          let: { productId: '$productId' },
+          pipeline: [
+            {
+              $match: {
+                $expr: {
+                  $and: [{ $eq: ['$_id', '$$productId'] }, { $eq: ['$companyId', companyObjectId] }],
+                },
+              },
+            },
+            { $project: { purchasePrice: 1 } },
+          ],
+          as: 'product',
+        },
+      },
+      { $unwind: '$product' },
+      {
+        $group: {
+          _id: null,
+          totalValue: { $sum: { $multiply: ['$quantity', '$product.purchasePrice'] } },
+          totalQuantity: { $sum: '$quantity' },
+        },
+      },
+      { $project: { _id: 0, totalValue: 1, totalQuantity: 1 } },
+    ]).exec();
+
+    return result ?? { totalValue: 0, totalQuantity: 0 };
   },
 };

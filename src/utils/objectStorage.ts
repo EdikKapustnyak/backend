@@ -3,8 +3,10 @@ import {
   PutObjectCommand,
   DeleteObjectCommand,
   GetObjectCommand,
+  HeadObjectCommand,
 } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
+import type { Readable } from 'node:stream';
 import { env } from '../config/env.js';
 import { AppError } from '../errors/index.js';
 
@@ -94,6 +96,64 @@ export const objectStorage = {
   async getPresignedDownloadUrl(key: string, expiresInSeconds = 900): Promise<string> {
     const command = new GetObjectCommand({ Bucket: getBucketName(), Key: key });
     return getSignedUrl(getClient(), command, { expiresIn: expiresInSeconds });
+  },
+
+  /**
+   * A time-limited signed PUT URL, so the browser can upload a file
+   * straight to R2 - the file's bytes never pass through our API server
+   * at all (see receipt.service.ts#requestUploadUrl). `contentType` is
+   * baked into the signature: R2 rejects the PUT if the browser sends a
+   * different Content-Type than what was signed here, which is exactly
+   * the point - it stops the upload from silently becoming some other
+   * file type than what the caller declared and got permission for.
+   */
+  async getPresignedUploadUrl(
+    key: string,
+    contentType: string,
+    expiresInSeconds = 600,
+  ): Promise<string> {
+    const command = new PutObjectCommand({ Bucket: getBucketName(), Key: key, ContentType: contentType });
+    return getSignedUrl(getClient(), command, { expiresIn: expiresInSeconds });
+  },
+
+  /**
+   * Confirms an object actually exists (and reads its real size) without
+   * downloading its bytes - used after a direct-to-R2 upload to verify the
+   * client really did upload something at the fileKey it claims, before a
+   * DB record ever gets created pointing at it (see
+   * receipt.service.ts#confirmUpload). A presigned PUT URL only grants
+   * permission to upload; it doesn't guarantee the caller actually used it.
+   */
+  async headObject(key: string): Promise<{ size: number; contentType: string | undefined } | null> {
+    try {
+      const result = await getClient().send(new HeadObjectCommand({ Bucket: getBucketName(), Key: key }));
+      return { size: result.ContentLength ?? 0, contentType: result.ContentType };
+    } catch (err) {
+      // S3-compatible APIs raise a "NotFound"-named error for a missing key -
+      // that specific case means "not uploaded yet / wrong key", not a real
+      // failure, so it's reported as null rather than re-thrown.
+      if (err instanceof Error && err.name === 'NotFound') return null;
+      throw err;
+    }
+  },
+
+  /**
+   * Reads an object's bytes directly, server-side - unlike
+   * getPresignedDownloadUrl (a signed URL for the browser to fetch), this
+   * is for when the server itself needs the actual content, e.g. handing
+   * a receipt photo's bytes to Claude's vision API for OCR (see
+   * receipt.service.ts#extractReceiptDataViaOcr).
+   */
+  async downloadObject(key: string): Promise<Buffer> {
+    const response = await getClient().send(
+      new GetObjectCommand({ Bucket: getBucketName(), Key: key }),
+    );
+    const stream = response.Body as Readable;
+    const chunks: Buffer[] = [];
+    for await (const chunk of stream) {
+      chunks.push(chunk as Buffer);
+    }
+    return Buffer.concat(chunks);
   },
 
   async deleteObject(key: string): Promise<void> {

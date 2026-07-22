@@ -8,6 +8,7 @@ import {
 import type { PurchaseStatus } from '../purchases/purchase.types.js';
 import type { WriteOffReason, WriteOffStatus } from '../write-offs/write-off.types.js';
 import type { InventarizationStatus } from '../inventarizations/inventarization.types.js';
+import type { ReportLanguage } from '../../i18n/reportLanguage.js';
 import { UnauthorizedError } from '../../errors/index.js';
 
 function buildFilename(base: string, from?: Date, to?: Date): string {
@@ -26,21 +27,20 @@ export const purchasesReportPdf = ctrlWrapper(async (req: Request, res: Response
   const supplierId = req.query['supplierId'] as string | undefined;
   const warehouseId = req.query['warehouseId'] as string | undefined;
   const status = req.query['status'] as PurchaseStatus | undefined;
+  const lang = req.query['lang'] as ReportLanguage;
 
-  const doc = await buildPurchasesReportPdf(req.auth.companyId, {
-    from,
-    to,
-    supplierId,
-    warehouseId,
-    status,
-  });
+  const pdfBuffer = await buildPurchasesReportPdf(
+    req.auth.companyId,
+    { from, to, supplierId, warehouseId, status },
+    lang,
+  );
 
   res.setHeader('Content-Type', 'application/pdf');
   res.setHeader(
     'Content-Disposition',
     `attachment; filename="${buildFilename('purchases-report', from, to)}"`,
   );
-  doc.pipe(res);
+  res.send(pdfBuffer);
 });
 
 export const writeOffsReportPdf = ctrlWrapper(async (req: Request, res: Response) => {
@@ -52,22 +52,20 @@ export const writeOffsReportPdf = ctrlWrapper(async (req: Request, res: Response
   const warehouseId = req.query['warehouseId'] as string | undefined;
   const reason = req.query['reason'] as WriteOffReason | undefined;
   const status = req.query['status'] as WriteOffStatus | undefined;
+  const lang = req.query['lang'] as ReportLanguage;
 
-  const doc = await buildWriteOffsReportPdf(req.auth.companyId, {
-    from,
-    to,
-    productId,
-    warehouseId,
-    reason,
-    status,
-  });
+  const pdfBuffer = await buildWriteOffsReportPdf(
+    req.auth.companyId,
+    { from, to, productId, warehouseId, reason, status },
+    lang,
+  );
 
   res.setHeader('Content-Type', 'application/pdf');
   res.setHeader(
     'Content-Disposition',
     `attachment; filename="${buildFilename('write-offs-report', from, to)}"`,
   );
-  doc.pipe(res);
+  res.send(pdfBuffer);
 });
 
 export const inventarizationsReportPdf = ctrlWrapper(async (req: Request, res: Response) => {
@@ -77,18 +75,18 @@ export const inventarizationsReportPdf = ctrlWrapper(async (req: Request, res: R
   const to = req.query['to'] as Date | undefined;
   const warehouseId = req.query['warehouseId'] as string | undefined;
   const status = req.query['status'] as InventarizationStatus | undefined;
+  const lang = req.query['lang'] as ReportLanguage;
 
-  const doc = await buildInventarizationsReportPdf(req.auth.companyId, {
-    from,
-    to,
-    warehouseId,
-    status,
-  });
+  const pdfBuffer = await buildInventarizationsReportPdf(
+    req.auth.companyId,
+    { from, to, warehouseId, status },
+    lang,
+  );
 
   res.setHeader('Content-Type', 'application/pdf');
   res.setHeader(
     'Content-Disposition',
     `attachment; filename="${buildFilename('inventarizations-report', from, to)}"`,
   );
-  doc.pipe(res);
+  res.send(pdfBuffer);
 });
