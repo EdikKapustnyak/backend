@@ -8,12 +8,29 @@ const envSchema = z.object({
 
   MONGODB_URI: z.string().min(1, 'MONGODB_URI is required'),
 
-  CORS_ORIGIN: z.string().default('http://localhost:5173'),
+  // Comma-separated list - see app.ts, which splits this into an array for
+  // the cors() middleware. Defaults to both local dev frontends: the
+  // tenant app (5173) and the separate admin-frontend (5174).
+  CORS_ORIGIN: z.string().default('http://localhost:5173,http://localhost:5174'),
 
   JWT_ACCESS_SECRET: z.string().min(32, 'JWT_ACCESS_SECRET must be at least 32 chars'),
   JWT_ACCESS_EXPIRES_IN: z.string().default('15m'),
   JWT_REFRESH_SECRET: z.string().min(32, 'JWT_REFRESH_SECRET must be at least 32 chars'),
   JWT_REFRESH_EXPIRES_IN: z.string().default('7d'),
+
+  // Fully separate secrets from the tenant JWT_* pair above - platform-admin
+  // auth is a deliberately isolated system (its own model, its own
+  // sessions, its own tokens), not a flag layered onto the tenant User
+  // model, so even a leak of one secret pair doesn't compromise the other.
+  ADMIN_JWT_ACCESS_SECRET: z.string().min(32, 'ADMIN_JWT_ACCESS_SECRET must be at least 32 chars'),
+  ADMIN_JWT_ACCESS_EXPIRES_IN: z.string().default('15m'),
+  ADMIN_JWT_REFRESH_SECRET: z.string().min(32, 'ADMIN_JWT_REFRESH_SECRET must be at least 32 chars'),
+  ADMIN_JWT_REFRESH_EXPIRES_IN: z.string().default('7d'),
+  // Deliberately a different cookie name than REFRESH_COOKIE_NAME below - a
+  // platform admin browsing the tenant app (or vice versa) in the same
+  // browser must never have the two refresh cookies collide or overwrite
+  // each other.
+  ADMIN_REFRESH_COOKIE_NAME: z.string().default('adminRefreshToken'),
 
   REFRESH_COOKIE_NAME: z.string().default('refreshToken'),
   COOKIE_DOMAIN: z.string().optional(),

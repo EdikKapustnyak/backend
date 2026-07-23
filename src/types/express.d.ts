@@ -7,10 +7,17 @@ export interface AuthContext {
   sessionId: string;
 }
 
+/** Deliberately separate from AuthContext above - a platform admin has no companyId/role in the tenant sense at all. */
+export interface AdminAuthContext {
+  adminId: string;
+  sessionId: string;
+}
+
 declare global {
   namespace Express {
     interface Request {
       auth?: AuthContext;
+      adminAuth?: AdminAuthContext;
     }
   }
 }

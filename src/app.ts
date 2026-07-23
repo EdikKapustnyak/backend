@@ -19,9 +19,13 @@ export function createApp(): Express {
   app.set('trust proxy', 1);
 
   app.use(securityHeaders);
+  // Comma-separated list, not a single origin - the tenant frontend
+  // (localhost:5173) and the separate admin-frontend (localhost:5174) are
+  // two different origins that both need to reach this same API.
+  const allowedOrigins = env.CORS_ORIGIN.split(',').map((origin) => origin.trim());
   app.use(
     cors({
-      origin: env.CORS_ORIGIN,
+      origin: allowedOrigins,
       credentials: true,
     }),
   );

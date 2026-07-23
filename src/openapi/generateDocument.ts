@@ -6,6 +6,11 @@ import { registry } from './registry.js';
 // them here (rather than scattering imports across the app) keeps "what
 // shows up in the docs" auditable from one place.
 import './paths/auth.paths.js';
+import './paths/admin-auth.paths.js';
+import './paths/contact-submissions.paths.js';
+import './paths/admin-companies.paths.js';
+import './paths/admin-dashboard.paths.js';
+import './paths/admin-audit-log.paths.js';
 import './paths/users.paths.js';
 import './paths/companies.paths.js';
 import './paths/billing.paths.js';

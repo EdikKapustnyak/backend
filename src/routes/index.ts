@@ -17,6 +17,14 @@ import { companyRouter } from '../modules/companies/company.routes.js';
 import { analyticsRouter } from '../modules/analytics/analytics.routes.js';
 import { localEventRouter } from '../modules/local-events/local-event.routes.js';
 import { billingRouter } from '../modules/billing/billing.routes.js';
+import { adminAuthRouter } from '../modules/platform-admin/admin-auth.routes.js';
+import {
+  contactSubmissionPublicRouter,
+  contactSubmissionAdminRouter,
+} from '../modules/contact-submissions/contact-submission.routes.js';
+import { adminCompanyRouter } from '../modules/admin-companies/admin-company.routes.js';
+import { adminDashboardRouter } from '../modules/admin-dashboard/admin-dashboard.routes.js';
+import { auditLogRouter } from '../modules/admin-audit-log/admin-audit-log.routes.js';
 
 export const apiRouter = Router();
 
@@ -38,3 +46,12 @@ apiRouter.use('/notifications', notificationRouter);
 apiRouter.use('/reports', reportRouter);
 apiRouter.use('/receipts', receiptRouter);
 apiRouter.use('/import', importRouter);
+// Platform-admin routes (auth here, more mounted below as they're built -
+// contact-submissions, companies-overview, etc.) - deliberately never
+// touches `authenticate`/tenant middleware; see authenticateAdmin.ts.
+apiRouter.use('/admin/auth', adminAuthRouter);
+apiRouter.use('/contact', contactSubmissionPublicRouter);
+apiRouter.use('/admin/contact-submissions', contactSubmissionAdminRouter);
+apiRouter.use('/admin/companies', adminCompanyRouter);
+apiRouter.use('/admin/dashboard', adminDashboardRouter);
+apiRouter.use('/admin/audit-log', auditLogRouter);

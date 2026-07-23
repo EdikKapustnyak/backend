@@ -6,6 +6,10 @@ process.env.JWT_ACCESS_SECRET = 'test-access-secret-please-32-chars-min';
 process.env.JWT_REFRESH_SECRET = 'test-refresh-secret-please-32-chars-min';
 process.env.JWT_ACCESS_EXPIRES_IN = '15m';
 process.env.JWT_REFRESH_EXPIRES_IN = '7d';
+process.env.ADMIN_JWT_ACCESS_SECRET = 'test-admin-access-secret-please-32-chars-min';
+process.env.ADMIN_JWT_REFRESH_SECRET = 'test-admin-refresh-secret-please-32-chars-min';
+process.env.ADMIN_JWT_ACCESS_EXPIRES_IN = '15m';
+process.env.ADMIN_JWT_REFRESH_EXPIRES_IN = '7d';
 
 // Force these to "not configured" regardless of what a real local .env file
 // has - `dotenv/config` (loaded later, inside src/config/env.ts) only fills
@@ -50,5 +54,10 @@ afterEach(async () => {
 
 afterAll(async () => {
   await mongoose.disconnect();
-  await replSet.stop();
+  // If MongoMemoryReplSet.create() itself failed in beforeAll (e.g. the
+  // replset config never propagated in time - see vitest.config.ts's
+  // singleFork comment), replSet was never assigned. Calling .stop() on
+  // it unconditionally would throw a second, unrelated TypeError that
+  // masks the real startup error above it in the log.
+  await replSet?.stop();
 });

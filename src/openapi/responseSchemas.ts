@@ -44,6 +44,23 @@ export const authTokensSchema = registry.register(
   }),
 );
 
+export const publicPlatformAdminSchema = registry.register(
+  'PlatformAdmin',
+  z.object({
+    id: objectId,
+    email: z.string().email(),
+    name: z.string(),
+  }),
+);
+
+export const adminAuthTokensSchema = registry.register(
+  'AdminAuthTokens',
+  z.object({
+    admin: publicPlatformAdminSchema,
+    accessToken: z.string(),
+  }),
+);
+
 export const publicSessionSchema = registry.register(
   'Session',
   z.object({

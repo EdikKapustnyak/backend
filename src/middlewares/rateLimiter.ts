@@ -36,3 +36,19 @@ export const authRateLimiter = rateLimit({
     },
   },
 });
+
+/** For the public, unauthenticated landing-page contact form - a stricter limit than the general API limiter since it's a write endpoint open to anyone, not just slower brute force like authRateLimiter guards against. A genuine visitor submits once; this only needs to be generous enough to allow a mistaken resubmit. */
+export const contactFormRateLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000,
+  limit: 5,
+  standardHeaders: true,
+  legacyHeaders: false,
+  skip: () => isTest,
+  message: {
+    success: false,
+    error: {
+      code: 'RATE_LIMITED',
+      message: 'Too many submissions, please try again later.',
+    },
+  },
+});
